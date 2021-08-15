@@ -18,18 +18,23 @@ class ImageFolder(Dataset):
         [-0.5836, -0.6948,  0.4203]
     ])
 
-    def __init__(self, root, transform=None) -> None:
+    def __init__(self, root, transform=None, max_samples=None) -> None:
         super().__init__()
         self.root = root
         self.img_list = glob.glob(os.path.join(root, '*.png'))
         self.img_list += glob.glob(os.path.join(root, '*.jpg'))
+        self.max_num = np.inf if max_samples is None else max_samples
 
         self.transforms = transform
     
     def __len__(self) -> int:
-        return min(len(self.img_list), 100_000)
+        return min(len(self.img_list), self.max_num)
     
     def __getitem__(self, index) -> torch.Tensor:
+        if self.max_num is not None:
+            n = len(self.img_list)
+            mul = n // self.max_num
+            index = (index * mul) % n
         pil_img = Image.open(self.img_list[index]).convert("RGB")
         if self.transforms:
             img = self.transforms(pil_img)
