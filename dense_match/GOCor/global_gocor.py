@@ -132,7 +132,7 @@ class GlobalGOCorOpt(nn.Module):
                                   self.target_mask_predictor, self.v_minus_act, self.num_bins,
                                   self.spatial_weight_predictor)
 
-    def forward(self, filter_map, reference_feat, query_feat, num_iter=None, compute_losses=False):
+    def forward(self, filter_map, reference_feat, query_feat, num_iter=None, compute_losses=False, target_map=None):
         """
         Apply optimization loop on the initialized filter map
         args:
@@ -169,7 +169,7 @@ class GlobalGOCorOpt(nn.Module):
         dist_map = self.distance_map(center, dist_map_sz)
 
         # Compute target map, weights v_plus and weight_m (used in v_minus), used for reference loss
-        target_map = self._unfold_map(self.label_map_predictor(dist_map))
+        target_map = self._unfold_map(self.label_map_predictor(dist_map)) if target_map is None else target_map
         v_plus = self._unfold_map(self.spatial_weight_predictor(dist_map))
         weight_m = self._unfold_map(self.target_mask_predictor(dist_map))
 

@@ -312,7 +312,7 @@ class GLUNet_model(BaseGLUMultiScaleMatchingNet):
 
         # prepare output dict
         output = {'flow_estimates': [flow2, flow1], 'correlation': [_corr2, _corr1]}
-        output_256 = {'flow_estimates': [flow4, flow3], 'correlation': [_corr3, corr4]}
+        output_256 = {'flow_estimates': [flow4, flow3], 'correlation': [corr4, _corr3]}
         return output_256, output
 
     # FOR FLIPPING CONDITION
@@ -444,3 +444,91 @@ class GLUNet_model(BaseGLUMultiScaleMatchingNet):
             return flow_est
         else:
             return flow_est.permute(0, 2, 3, 1)
+
+
+class GLUNetCorr(BaseGLUMultiScaleMatchingNet):
+    """
+    GLU-Net model
+    """
+    def __init__(self, iterative_refinement=False,
+                 global_corr_type='feature_corr_layer', global_gocor_arguments=None, normalize='relu_l2norm',
+                 normalize_features=True, cyclic_consistency=False,
+                 local_corr_type='feature_corr_layer', local_gocor_arguments=None, same_local_corr_at_all_levels=True,
+                 local_decoder_type='OpticalFlowEstimator', global_decoder_type='CMDTop',
+                 decoder_inputs='corr_flow_feat', refinement_at_adaptive_reso=True, refinement_at_all_levels=False,
+                 refinement_at_finest_level=True, apply_refinement_finest_resolution=True,
+                 batch_norm=True, pyramid_type='VGG', md=4, upfeat_channels=2, train_features=False):
+        params = set_glunet_parameters(global_corr_type=global_corr_type, gocor_global_arguments=global_gocor_arguments,
+                                       normalize=normalize, normalize_features=normalize_features,
+                                       cyclic_consistency=cyclic_consistency, md=md,
+                                       local_corr_type=local_corr_type, gocor_local_arguments=local_gocor_arguments,
+                                       same_local_corr_at_all_levels=same_local_corr_at_all_levels,
+                                       local_decoder_type=local_decoder_type, global_decoder_type=global_decoder_type,
+                                       decoder_inputs=decoder_inputs,
+                                       refinement_at_adaptive_reso=refinement_at_adaptive_reso,
+                                       refinement_at_all_levels=refinement_at_all_levels,
+                                       refinement_at_finest_level=refinement_at_finest_level,
+                                       apply_refinement_finest_resolution=apply_refinement_finest_resolution,
+                                       batch_norm=batch_norm, nbr_upfeat_channels=upfeat_channels)
+        super().__init__(params)
+        self.iterative_refinement = iterative_refinement
+
+        # level 4, 16x16
+        nd = 16*16  # global correlation
+        od = nd + 2
+        decoder4, num_channels_last_conv = self.initialize_mapping_decoder(self.params.global_decoder_type, in_channels=od,
+                                                                           batch_norm=self.params.batch_norm)
+        self.decoder4 = decoder4
+        self.deconv4 = deconv(2, 2, kernel_size=4, stride=2, padding=1)
+
+        # level 3, 32x32
+        nd = (2*self.params.md+1)**2  # constrained correlation, 4 pixels on each side
+
+        # initialize modules
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                nn.init.kaiming_normal_(m.weight.data, mode='fan_in')
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                # In earlier versions batch norm parameters was initialized with default initialization,
+                # which changed in pytorch 1.2. In 1.1 and earlier the weight was set to U(0,1).
+                # So we use the same initialization here.
+                # m.weight.data.fill_(1)
+                m.weight.data.uniform_()
+                m.bias.data.zero_()
+
+        # initialize the global and local correlation modules
+        # comprises GOCor or feature correlation layer
+        self.initialize_global_corr()
+        self.initialize_local_corr()
+
+        # features back-bone extractor
+        if pyramid_type == 'VGG':
+            feature_extractor = VGGPyramid(train=train_features)
+        else:
+            raise NotImplementedError('The feature extractor that you selected in not implemented: {}'
+                                      .format(pyramid_type))
+        self.pyramid = feature_extractor
+
+    def forward(self, im_target, im_source, im_target_256, im_source_256, im_target_pyr=None, im_source_pyr=None,
+                im_target_pyt_256=None, im_source_pyr_256=None):
+        # im1 is target image, im2 is source image
+        b, _, h_original, w_original = im_target.size()
+        b, _, h_256, w_256 = im_target_256.size()
+        div = 1.0
+
+        c14, c24, c13, c23, c12, c22, c11, c21 = self.extract_features(im_target, im_source, im_target_256,
+                                                                       im_source_256, im_target_pyr,
+                                                                       im_source_pyr, im_target_pyt_256,
+                                                                       im_source_pyr_256)
+        # RESOLUTION 256x256
+        # level 4: 16x16
+        ratio_x = 16.0 / float(w_256)
+        ratio_y = 16.0 / float(h_256)
+
+        corr4 = self.get_global_correlation(c14, c24)
+        # prepare output dict
+        output = {'flow_estimates': [], 'correlation': []}
+        output_256 = {'flow_estimates': [], 'correlation': [corr4]}
+        return output_256, output

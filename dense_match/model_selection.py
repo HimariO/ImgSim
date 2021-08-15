@@ -1,11 +1,11 @@
-from .models.GLUNet.GLU_Net import GLUNet_model
+from .models.GLUNet.GLU_Net import GLUNet_model, GLUNetCorr
 # from .models.PWCNet.pwc_net import PWCNet_model
 import os.path as osp
 import torch
 import os
 
 
-def load_network(net, checkpoint_path=None, **kwargs):
+def load_network(net: torch.nn.Module, checkpoint_path=None, **kwargs):
     """Loads a network checkpoint file.
     args:
         net: network architecture
@@ -21,13 +21,13 @@ def load_network(net, checkpoint_path=None, **kwargs):
     checkpoint_dict = torch.load(checkpoint_path, map_location='cpu')
 
     try:
-        net.load_state_dict(checkpoint_dict['state_dict'])
+        net.load_state_dict(checkpoint_dict['state_dict'], strict=False)
     except:
-        net.load_state_dict(checkpoint_dict)
+        net.load_state_dict(checkpoint_dict, strict=False)
     return net
 
 
-model_type = ['GLUNet', 'GLUNet_GOCor', 'PWCNet', 'PWCNet_GOCor']
+model_type = ['GLUNet', 'GLUNet_GOCor', 'GLUNet_GOCor_Corr', 'PWCNet', 'PWCNet_GOCor']
 pre_trained_model_types = ['static', 'dynamic', 'chairs_things', 'chairs_things_ft_sintel']
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -86,6 +86,33 @@ def select_model(model_name, pre_trained_model_type, global_optim_iter, local_op
         # for global gocor, we apply L_r only
         local_gocor_arguments = {'optim_iter': local_optim_iter}
         network = GLUNet_model(iterative_refinement=True, global_corr_type='GlobalGOCor',
+                               global_gocor_arguments=global_gocor_arguments, normalize='leakyrelu',
+                               local_corr_type='LocalGOCor', local_gocor_arguments=local_gocor_arguments,
+                               same_local_corr_at_all_levels=True)
+    elif model_name == 'GLUNet_GOCor_Corr':
+        '''
+        Default for global and local gocor arguments:
+        global_gocor_arguments = {'optim_iter':3, 'num_features': 512, 'init_step_length': 1.0, 
+                                  'init_filter_reg': 1e-2, 'min_filter_reg': 1e-5,
+                                  'num_dist_bins':10, 'bin_displacement': 0.5, 'init_gauss_sigma_DIMP':1.0,
+                                  'v_minus_act': 'sigmoid', 'v_minus_init_factor': 4.0
+                                  'apply_query_loss': False, 'reg_kernel_size': 3, 
+                                  'reg_inter_dim': 1, 'reg_output_dim': 1.0}
+        
+        local_gocor_arguments= {'optim_iter':3, 'num_features': 512, 'search_size': 9, 'init_step_length': 1.0,
+                                'init_filter_reg': 1e-2, 'min_filter_reg': 1e-5,
+                                'num_dist_bins':10, 'bin_displacement': 0.5, 'init_gauss_sigma_DIMP':1.0,
+                                'v_minus_act': 'sigmoid', 'v_minus_init_factor': 4.0
+                                'apply_query_loss': False, 'reg_kernel_size': 3, 
+                                'reg_inter_dim': 1, 'reg_output_dim': 1.0}
+        '''
+        # for global gocor, we apply L_r and L_q within the optimizer module
+        global_gocor_arguments = {'optim_iter': global_optim_iter, 'apply_query_loss': True,
+                                  'reg_kernel_size': 3, 'reg_inter_dim': 16, 'reg_output_dim': 16}
+
+        # for global gocor, we apply L_r only
+        local_gocor_arguments = {'optim_iter': local_optim_iter}
+        network = GLUNetCorr(iterative_refinement=True, global_corr_type='GlobalGOCor',
                                global_gocor_arguments=global_gocor_arguments, normalize='leakyrelu',
                                local_corr_type='LocalGOCor', local_gocor_arguments=local_gocor_arguments,
                                same_local_corr_at_all_levels=True)

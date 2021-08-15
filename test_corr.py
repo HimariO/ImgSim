@@ -97,7 +97,9 @@ with torch.no_grad():
                                                                        mode='channel_first')
     else:
         estimated_flow = network.estimate_corr(query_image_, reference_image_, mode='channel_first')
-    estimated_flow_numpy = estimated_flow.squeeze().permute(1, 2, 0).cpu().numpy()
+    # estimated_flow_numpy = estimated_flow.squeeze().permute(1, 2, 0).cpu().numpy()
+    for conf_map in estimated_flow:
+        print(conf_map.shape)
 
     # save images
     '''

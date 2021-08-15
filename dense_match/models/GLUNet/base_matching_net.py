@@ -12,8 +12,10 @@ from dense_match.GOCor.optimizer_selection_functions import define_optimizer_loc
 from dense_match.GOCor.global_gocor_modules import GlobalGOCorWithFlexibleContextAwareInitializer
 
 
-def pre_process_data_GLUNet(source_img, target_img, device, mean_vector=[0.485, 0.456, 0.406],
-                            std_vector=[0.229, 0.224, 0.225], apply_flip=False):
+def pre_process_data_GLUNet(source_img: torch.Tensor, target_img: torch.Tensor, device,
+                            mean_vector=[0.485, 0.456, 0.406],
+                            std_vector=[0.229, 0.224, 0.225],
+                            apply_flip=False):
     # img has shape bx3xhxw
     b, _, h_scale, w_scale = target_img.shape
 
@@ -66,8 +68,13 @@ def pre_process_data_GLUNet(source_img, target_img, device, mean_vector=[0.485, 
 
     ratio_x = float(w_scale) / float(int_preprocessed_width)
     ratio_y = float(h_scale) / float(int_preprocessed_height)
-    return source_img_copy.to(device), target_img_copy.to(device), source_img_256.to(device), \
-           target_img_256.to(device), ratio_x, ratio_y
+    return (
+        source_img_copy.to(device),
+        target_img_copy.to(device),
+        source_img_256.to(device),
+        target_img_256.to(device),
+        ratio_x,
+        ratio_y)
 
 
 class MatchingNetParams:
@@ -352,7 +359,7 @@ class BaseGLUMultiScaleMatchingNet(BaseMultiScaleMatchingNet):
          ratio_x, ratio_y) = self.pre_process_data(source_img, target_img)
         output_256, output = self.forward(target_img, source_img, target_img_256, source_img_256)
 
-        return output['correlation']
+        return output_256['correlation'] + output['correlation']
 
 
 def set_glunet_parameters(global_corr_type='feature_corr_layer', gocor_global_arguments=None, normalize='relu_l2norm',
