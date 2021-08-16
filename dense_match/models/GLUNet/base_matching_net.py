@@ -1,8 +1,11 @@
+import math
+from typing import *
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import math
+
 from ..modules.consensus_network_modules import MutualMatching, NeighConsensus, FeatureCorrelation
 from ..modules.mod import conv, predict_flow
 from ..modules.feature_correlation_layer import FeatureL2Norm, GlobalFeatureCorrelationLayer
@@ -347,7 +350,7 @@ class BaseGLUMultiScaleMatchingNet(BaseMultiScaleMatchingNet):
         else:
             return flow_est.permute(0, 2, 3, 1)
     
-    def estimate_corr(self, source_img, target_img, output_shape=None, scaling=1.0, mode='channel_first'):
+    def estimate_corr(self, source_img, target_img, output_shape=None, scaling=1.0, mode='flatten') -> List[torch.Tensor]:
         w_scale = target_img.shape[3]
         h_scale = target_img.shape[2]
         # define output_shape
@@ -358,7 +361,15 @@ class BaseGLUMultiScaleMatchingNet(BaseMultiScaleMatchingNet):
          source_img_256, target_img_256,
          ratio_x, ratio_y) = self.pre_process_data(source_img, target_img)
         output_256, output = self.forward(target_img, source_img, target_img_256, source_img_256)
-
+        
+        if mode != 'flatten':
+            output_256['correlation'] = [
+                corr.view([-1, corr.shape[-2], corr.shape[-1], corr.shape[-2], corr.shape[-1]])
+                for corr in output_256['correlation']]
+            output['correlation'] = [
+                corr.view([-1, corr.shape[-2], corr.shape[-1], corr.shape[-2], corr.shape[-1]])
+                for corr in output['correlation']]
+        
         return output_256['correlation'] + output['correlation']
 
 

@@ -1,0 +1,30 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "test_corr.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_corr.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "--model", "GLUNet_GOCor_Corr",
+                "--pre_trained_model", "dynamic",
+                "--path_query_image", "~/Downloads/fb-isc/query/Q16049.jpg",
+                "--path_reference_image", "~/Downloads/fb-isc/reference/R326740.jpg",
+                "--write_dir", "evaluation/"
+            ]
+        }
+    ]
+}

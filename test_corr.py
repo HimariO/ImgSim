@@ -1,7 +1,10 @@
 import os
-import torch
 import argparse
+import random
+
+import torch
 import imageio
+import numpy as np
 from matplotlib import pyplot as plt
 import cv2
 from dense_match.GOCor.utils_flow.pixel_wise_mapping import remap_using_flow_fields
@@ -34,6 +37,26 @@ def boolean_string(s):
     if s not in {'False', 'True'}:
         raise ValueError('Not a valid boolean string')
     return s == 'True'
+
+
+def grid_colors(n):
+    
+    def hsv_to_rgb(h, s, v):
+        if s == 0.0: return (v, v, v)
+        i = int(h*6.) # XXX assume int() truncates!
+        f = (h*6.)-i; p,q,t = v*(1.-s), v*(1.-s*f), v*(1.-s*(1.-f)); i%=6
+        if i == 0: return (v, t, p)
+        if i == 1: return (q, v, p)
+        if i == 2: return (p, v, t)
+        if i == 3: return (p, q, v)
+        if i == 4: return (t, p, v)
+        if i == 5: return (v, p, q)
+        
+    colors = [
+        tuple(v for v in hsv_to_rgb(i / n**2, 1, 1))
+        for i in range(n**2)
+    ]
+    return colors
 
 
 parser = argparse.ArgumentParser(description='Test models on a pair of images')
@@ -92,16 +115,53 @@ with torch.no_grad():
     # specific pre-processing (/255 and rescaling) are done within the function.
 
     # pass both images to the network, it will pre-process the images and ouput the estimated flow in dimension 1x2xHxW
-    if args.flipping_condition and 'GLUNet' in args.model:
-        estimated_flow = network.estimate_flow_with_flipping_condition(query_image_, reference_image_,
-                                                                       mode='channel_first')
-    else:
-        estimated_flow = network.estimate_corr(query_image_, reference_image_, mode='channel_first')
+    estimated_flow = network.estimate_corr(query_image_, reference_image_, mode='flatten')
     # estimated_flow_numpy = estimated_flow.squeeze().permute(1, 2, 0).cpu().numpy()
     for conf_map in estimated_flow:
-        print(conf_map.shape)
+        h, w = conf_map.shape[-2:]
+        if conf_map.ndim == 4:
+            # flat_idx = conf_map.argmax(dim=1)
+            max_conf, flat_idx = conf_map.max(dim=1)
+            x = flat_idx % w
+            y = flat_idx // w
+            print(x, y)
+            print(max_conf)
 
+            max_conf = torch.flatten(max_conf).cpu().numpy()
+            x = torch.flatten(x).float().cpu().numpy() + 0.5
+            y = torch.flatten(y).float().cpu().numpy() + 0.5
+            assert len(x) == len(y) == len(max_conf)
+            mapping = [
+                {
+                    'ref': (i % w / w, i // w / h),
+                    'que': (_x / w, _y / h, _c)
+                }
+                for i, _x, _y, _c in zip(range(len(x)), x, y, max_conf)
+            ]
+            
+        print(conf_map.shape)
+    # print(mapping)
     # save images
+    print('query_image: ', query_image.shape)
+    print('reference_image: ', reference_image.shape)
+    colors = grid_colors(h)
+    random.shuffle(colors)
+
+    h, w = query_image.shape[:2]
+    merge_image = np.concatenate([query_image, reference_image], axis=1)
+
+    plt.figure(figsize=(30, 30))
+    plt.imshow(merge_image)
+    for i, m in enumerate(mapping):
+        x1, y1 = m['ref']
+        x2, y2, _ = m['que']
+        x1 = int(x1 * w)
+        x2 = int(x2 * w)
+        y1 = int(y1 * h)
+        y2 = int(y2 * h)
+        plt.arrow(x1, y1, x2 + w - x1, y2 - y1, color=colors[i], head_width=10)
+    plt.show()
+
     '''
     imageio.imwrite(os.path.join(args.write_dir, 'query.png'), query_image)
     imageio.imwrite(os.path.join(args.write_dir, 'reference.png'), reference_image)
