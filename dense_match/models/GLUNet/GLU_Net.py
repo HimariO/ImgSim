@@ -122,10 +122,8 @@ class GLUNet_model(BaseGLUMultiScaleMatchingNet):
         b, _, h_256, w_256 = im_target_256.size()
         div = 1.0
 
-        c14, c24, c13, c23, c12, c22, c11, c21 = self.extract_features(im_target, im_source, im_target_256,
-                                                                       im_source_256, im_target_pyr,
-                                                                       im_source_pyr, im_target_pyt_256,
-                                                                       im_source_pyr_256)
+        c14, c13, c12, c11 = self.extract_features(im_target, im_target_256, im_target_pyr, im_target_pyt_256)
+        c24, c23, c22, c21 = self.extract_features(im_source, im_source_256, im_source_pyr, im_source_pyr_256)
         # RESOLUTION 256x256
         # level 4: 16x16
         ratio_x = 16.0 / float(w_256)
@@ -513,20 +511,8 @@ class GLUNetCorr(BaseGLUMultiScaleMatchingNet):
 
     def forward(self, im_target, im_source, im_target_256, im_source_256, im_target_pyr=None, im_source_pyr=None,
                 im_target_pyt_256=None, im_source_pyr_256=None):
-        # im1 is target image, im2 is source image
-        b, _, h_original, w_original = im_target.size()
-        b, _, h_256, w_256 = im_target_256.size()
-        div = 1.0
-
-        c14, c24, c13, c23, c12, c22, c11, c21 = self.extract_features(im_target, im_source, im_target_256,
-                                                                       im_source_256, im_target_pyr,
-                                                                       im_source_pyr, im_target_pyt_256,
-                                                                       im_source_pyr_256)
-        # RESOLUTION 256x256
-        # level 4: 16x16
-        ratio_x = 16.0 / float(w_256)
-        ratio_y = 16.0 / float(h_256)
-
+        c14, c13, c12, c11 = self.extract_features(im_target, im_target_256, im_target_pyr, im_target_pyt_256)
+        c24, c23, c22, c21 = self.extract_features(im_source, im_source_256, im_source_pyr, im_source_pyr_256)
         corr4 = self.get_global_correlation(c14, c24)
         # prepare output dict
         output = {'flow_estimates': [], 'correlation': []}

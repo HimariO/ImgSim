@@ -144,11 +144,13 @@ with torch.no_grad():
     # save images
     print('query_image: ', query_image.shape)
     print('reference_image: ', reference_image.shape)
+    print('conf_map: ', conf_map.min(), conf_map.max(), conf_map.mean(), conf_map.var())
     colors = grid_colors(h)
     random.shuffle(colors)
 
     h, w = query_image.shape[:2]
     merge_image = np.concatenate([query_image, reference_image], axis=1)
+    mapping = [m for m in mapping if m['que'][-1] > .1]
 
     plt.figure(figsize=(30, 30))
     plt.imshow(merge_image)

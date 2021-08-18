@@ -284,27 +284,23 @@ class BaseGLUMultiScaleMatchingNet(BaseMultiScaleMatchingNet):
         res = self.l_dc_conv7(x)
         return x, res
 
-    def extract_features(self, im_target, im_source, im_target_256, im_source_256,
-                         im1_pyr=None, im2_pyr=None, im1_pyr_256=None, im2_pyr_256=None):
+    def extract_features(self, im_target, im_target_256=None,
+                         im1_pyr=None, im1_pyr_256=None):
         # pyramid, original reso
         if im1_pyr is None:
             im1_pyr = self.pyramid(im_target, eigth_resolution=True)
-        if im2_pyr is None:
-            im2_pyr = self.pyramid(im_source, eigth_resolution=True)
         c11 = im1_pyr[-2]  # size original_res/4xoriginal_res/4
-        c21 = im2_pyr[-2]
         c12 = im1_pyr[-1]  # size original_res/8xoriginal_res/8
-        c22 = im2_pyr[-1]
-
-        # pyramid, 256 reso
-        if im1_pyr_256 is None:
-            im1_pyr_256 = self.pyramid(im_target_256)
-            im2_pyr_256 = self.pyramid(im_source_256)
-        c13 = im1_pyr_256[-4]
-        c23 = im2_pyr_256[-4]
-        c14 = im1_pyr_256[-3]
-        c24 = im2_pyr_256[-3]
-        return c14, c24, c13, c23, c12, c22, c11, c21
+        # import pdb;pdb.set_trace()
+        if im_target_256 is not None:
+            # pyramid, 256 reso
+            if im1_pyr_256 is None:
+                im1_pyr_256 = self.pyramid(im_target_256)
+            c13 = im1_pyr_256[-4]
+            c14 = im1_pyr_256[-3]
+            return c14, c13, c12, c11
+        else:
+            return c12, c11
 
     def pre_process_data(self, im_source, im_target, apply_flip=False):
         return pre_process_data_GLUNet(im_source, im_target, self.params.device, apply_flip=apply_flip)
@@ -350,16 +346,13 @@ class BaseGLUMultiScaleMatchingNet(BaseMultiScaleMatchingNet):
         else:
             return flow_est.permute(0, 2, 3, 1)
     
-    def estimate_corr(self, source_img, target_img, output_shape=None, scaling=1.0, mode='flatten') -> List[torch.Tensor]:
-        w_scale = target_img.shape[3]
-        h_scale = target_img.shape[2]
-        # define output_shape
-        if output_shape is None and scaling != 1.0:
-            output_shape = (int(h_scale*scaling), int(w_scale*scaling))
-
+    def estimate_corr(self, source_img, target_img, mode='flatten') -> List[torch.Tensor]:
+        """
+        source_img: torch.Tensor.uint8 (b, 3, h, w)
+        target_img: torch.Tensor.uint8 (b, 3, h, w)
+        """
         (source_img, target_img,
-         source_img_256, target_img_256,
-         ratio_x, ratio_y) = self.pre_process_data(source_img, target_img)
+         source_img_256, target_img_256) = self.pre_process_data(source_img, target_img)[:4]
         output_256, output = self.forward(target_img, source_img, target_img_256, source_img_256)
         
         if mode != 'flatten':
