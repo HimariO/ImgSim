@@ -58,18 +58,27 @@ class FrozenBatchNorm2d(torch.nn.Module):
 
 class BackboneBase(nn.Module):
 
-    def __init__(self, backbone: nn.Module, train_backbone: bool, num_channels: int, return_interm_layers: bool, layer='layer3'):
+    def __init__(self,
+                backbone: nn.Module,
+                train_backbone: bool,
+                num_channels: int,
+                return_interm_layers: bool,
+                layer='layer3',
+                cat_img=True):
         super().__init__()
         for name, parameter in backbone.named_parameters():
             if not train_backbone or 'layer2' not in name and 'layer3' not in name and 'layer4' not in name:
                 parameter.requires_grad_(False)
                 print(f'freeze {name}')
+        
         if return_interm_layers:
             return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
         else:
             return_layers = {layer: "0"}
+        
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
         self.num_channels = num_channels
+        self.cat_img = cat_img
 
     def forward_raw(self, x):
         y = self.body(x)
@@ -77,17 +86,25 @@ class BackboneBase(nn.Module):
         return y['0']
 
     def forward(self, tensor_list: NestedTensor):
-        assert tensor_list.tensors.shape[-2:] == (constants.MAX_SIZE, constants.MAX_SIZE * 2)
-        left = self.body(tensor_list.tensors[..., 0:constants.MAX_SIZE])
-        right = self.body(tensor_list.tensors[..., constants.MAX_SIZE:2 * constants.MAX_SIZE])
-        xs = {}
-        for k in left.keys():
-            xs[k] = torch.cat([left[k], right[k]], dim=-1)
+        if self.cat_img:
+            assert tensor_list.tensors.shape[-2:] == (constants.MAX_SIZE, constants.MAX_SIZE * 2)
+            left = self.body(tensor_list.tensors[..., 0:constants.MAX_SIZE])
+            right = self.body(tensor_list.tensors[..., constants.MAX_SIZE:2 * constants.MAX_SIZE])
+            
+            xs = {}
+            for k in left.keys():
+                xs[k] = torch.cat([left[k], right[k]], dim=-1)
+        else:
+            xs = self.body(tensor_list.tensors)
+        
         out: Dict[str, NestedTensor] = {}
         for name, x in xs.items():
             m = tensor_list.mask
             assert m is not None
-            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
+            if m.ndim == 4:
+                mask = F.interpolate(m.float(), size=x.shape[-2:]).mean(dim=1).to(torch.bool)
+            else:
+                mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
             out[name] = NestedTensor(x, mask)
         return out
 
@@ -100,11 +117,12 @@ class Backbone(BackboneBase):
                  return_interm_layers: bool,
                  dilation: bool,
                  layer='layer3',
-                 num_channels=1024):
+                 num_channels=1024,
+                 cat_img=True):
         backbone = getattr(torchvision.models, name)(
             replace_stride_with_dilation=[False, False, dilation],
             pretrained=True, norm_layer=FrozenBatchNorm2d)
-        super().__init__(backbone, train_backbone, num_channels, return_interm_layers, layer)
+        super().__init__(backbone, train_backbone, num_channels, return_interm_layers, layer, cat_img=cat_img)
 
 
 class Joiner(nn.Sequential):
@@ -129,7 +147,14 @@ def build_backbone(args):
         train_backbone = args.lr_backbone > 0
     else:
         train_backbone = False
-    backbone = Backbone(args.backbone, train_backbone, False, args.dilation, layer=args.layer, num_channels=args.dim_feedforward)
+    backbone = Backbone(
+        args.backbone,
+        train_backbone,
+        False,
+        args.dilation,
+        layer=args.layer,
+        num_channels=args.dim_feedforward,
+        cat_img=args.cat_img)
     model = Joiner(backbone, position_embedding)
     model.num_channels = backbone.num_channels
     return model

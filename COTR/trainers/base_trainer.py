@@ -5,7 +5,6 @@ import time
 
 import tqdm
 import torch.nn as nn
-import tensorboardX
 
 from COTR.trainers import tensorboard_helper
 from COTR.utils import utils

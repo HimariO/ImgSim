@@ -1,6 +1,9 @@
 import itertools
+import functools
+from re import L
 from typing import *
 from dataclasses import dataclass
+from collections import defaultdict
 
 import cv2
 from imgaug.augmenters.meta import OneOf
@@ -11,6 +14,7 @@ import imgaug as ia
 from PIL import Image
 from imgaug import augmenters as iaa
 from imgaug.augmentables import Keypoint, KeypointsOnImage
+from torchvision.transforms import functional as tvtf
 
 
 @dataclass
@@ -30,6 +34,28 @@ class PairAug:
         self.grid_size = output_size[0] // sample_rate
         self.grid_cell = output_size[0] // self.grid_size
     
+    @staticmethod
+    def collect(batch: List[Dict[str, list]]):
+        batch_cache = defaultdict(list)
+        for data in batch:
+            for k, v in data.items():
+                batch_cache[k].append(v)                    
+        
+        batched = {}
+        for k, v in batch_cache.items():
+            if type(v[0]) is torch.Tensor:
+                if v[0].ndim == 3:
+                    batched[k] = torch.stack(v)
+                elif 6 > v[0].ndim > 3:
+                    batched[k] = torch.cat(v)
+                else:
+                    raise ValueError(f'{v[0].ndim}')
+            elif type(v[0]) is list:
+                batched[k] = functools.reduce(lambda a, b: a + b, v)
+            else:
+                raise RuntimeError()
+        return batched
+    
     @property
     def grid_kp(self):
         if not hasattr(self, '_grid_kp'):
@@ -43,7 +69,7 @@ class PairAug:
                     y=j * sr + sr // 2)
                 for i, j in itertools.product(range(self.grid_size), range(self.grid_size))
                 ],
-                shape=[imsize, imsize, 3]
+                shape=(imsize, imsize, 3)
             )
         return self._grid_kp.deepcopy()
 
@@ -53,13 +79,16 @@ class PairAug:
             self._uni_size_transf = iaa.Sequential([
                 iaa.CropToAspectRatio(1),
                 iaa.OneOf([
-                    iaa.CropToFixedSize(
-                        width=self.output_size[0],
-                        height=self.output_size[1]),
+                    iaa.Sequential([
+                        iaa.CropToFixedSize(
+                            width=self.output_size[0],
+                            height=self.output_size[1]),
+                        iaa.Resize(self.output_size),
+                    ]),
                     iaa.Resize(self.output_size),
                     iaa.Sequential([
                         iaa.Resize((0.5, 1.0)),
-                        iaa.Reisze({
+                        iaa.Resize({
                             'width': self.output_size[0],
                             'height': self.output_size[1]
                         })
@@ -96,25 +125,34 @@ class PairAug:
                     iaa.ChangeColorTemperature((1100, 10000)),
                 ]),
                 iaa.OneOf([
-                    iaa.OneOf([
-                        iaa.GammaContrast((0.5, 2.0)),
-                        iaa.AllChannelsCLAHE(clip_limit=(1, 10)),
-                        iaa.HistogramEqualization(),
-                    ]),
-                    iaa.OneOf([
-                        iaa.BlendAlpha([0.25, 0.75], iaa.MedianBlur(13)),
-                        iaa.GaussianBlur(sigma=(0.0, 3.0)),
-                        iaa.MotionBlur(k=15)
-                    ]),
-                    iaa.OneOf([
-                        # iaa.BlendAlphaHorizontalLinearGradient(
-                        #     iaa.TotalDropout(1.0),
-                        #     min_value=0.2, max_value=0.8)
-                        iaa.BlendAlphaHorizontalLinearGradient(
-                            iaa.Lambda(lambda x, r, p, h: [cv2.filter2D(x[0],-1, np.ones([11, 11]) / 121)]),
-                            start_at=(0.0, 1.0), end_at=(0.0, 1.0)),
-                        iaa.Cartoon(),
-                    ])
+                    iaa.Sometimes(
+                        0.4,
+                        iaa.OneOf([
+                            iaa.GammaContrast((0.5, 2.0)),
+                            iaa.AllChannelsCLAHE(clip_limit=(1, 10)),
+                            iaa.HistogramEqualization(),
+                        ])
+                    ),
+                    iaa.Sometimes(
+                        0.6,
+                        iaa.OneOf([
+                            iaa.BlendAlpha([0.25, 0.75], iaa.MedianBlur(13)),
+                            iaa.GaussianBlur(sigma=(0.0, 3.0)),
+                            iaa.MotionBlur(k=15)
+                        ]),
+                    ),
+                    iaa.Sometimes(
+                        0.2,
+                        iaa.OneOf([
+                            # iaa.BlendAlphaHorizontalLinearGradient(
+                            #     iaa.TotalDropout(1.0),
+                            #     min_value=0.2, max_value=0.8)
+                            iaa.BlendAlphaHorizontalLinearGradient(
+                                iaa.Lambda(lambda x, r, p, h: [cv2.filter2D(x[0],-1, np.ones([11, 11]) / 121)]),
+                                start_at=(0.0, 1.0), end_at=(0.0, 1.0)),
+                            iaa.Cartoon(),
+                        ])
+                    )
                 ])
             ])
         return self._color_transf
@@ -132,27 +170,53 @@ class PairAug:
         return meta_kps
 
     def kp_to_4d_onehot(self, kps: List[MetaKP]) -> torch.Tensor:
-        onehot = torch.zeros([*self.grid_size, *self.grid_size], dtype=torch.float32)
+        onehot = torch.zeros([self.grid_size,] * 4, dtype=torch.float32)
         for kp in kps:
-            ax, ay = kp.aug_grid_kp, kp.aug_grid_kp
+            ax, ay = kp.aug_grid_kp
             x, y = kp.src_grid_kp
-            onehot[x, y, ax, ay] = 1
+            onehot[x, y, round(ax), round(ay)] = 1
         return onehot
 
-    def __call__(self, image: Image, index: int) -> Tuple[torch.Tensor]:
+    def __call__(self, image: Image, index: int) -> Dict[str, torch.Tensor]:
         np_img = np.asarray(image)
 
-        base_img = self.uni_size_transf(np_img)
+        base_img = self.uni_size_transf(image=np_img)
         aug_imgs = []
         aug_kps = []
         target_corrs = []
         for _ in range(self.n_derive):
             deriv_img, kps = self.gemo_transf(image=base_img, keypoints=self.grid_kp)
-            deriv_img, kps = self.color_transf(image=deriv_img, keypoints=kps)
+            # deriv_img, kps = self.color_transf(image=deriv_img, keypoints=kps)
             mkps = self.filter_insert_kp_mtea(kps, index)
+            assert deriv_img.shape == base_img.shape, f"{deriv_img.shape} != {base_img.shape}"
+            deriv_img = tvtf.normalize(
+                tvtf.to_tensor(deriv_img),
+                (0.485, 0.456, 0.406),
+                (0.229, 0.224, 0.225))
             
             aug_imgs.append(deriv_img)
             aug_kps.append(mkps)
             target_corrs.append(self.kp_to_4d_onehot(mkps))
-        return base_img, aug_imgs, aug_kps, target_corrs
         
+        base_img = tvtf.normalize(tvtf.to_tensor(base_img), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        
+        return {
+            "base_img": base_img,
+            "aug_imgs": torch.stack(aug_imgs),
+            "aug_kps": aug_kps,
+            "target_corrs": torch.stack(target_corrs)
+        }
+
+
+if __name__ == '__main__':
+    paug = PairAug()
+    img = np.ones([720, 480, 3], dtype=np.uint8)
+    img = Image.fromarray(img)
+    d = paug(img, 0)
+    # print(paug.collect([d, d]))
+    
+    for k, v in paug.collect([d, d]).items():
+        if type(v) is torch.Tensor:
+            print(k, v.shape)
+        else:
+            print(k, len(v))

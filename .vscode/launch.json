@@ -25,6 +25,17 @@
                 "--path_reference_image", "~/Downloads/fb-isc/reference/R326740.jpg",
                 "--write_dir", "evaluation/"
             ]
+        },
+        {
+            "name": "train_corr.py",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_corr.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                
+            ]
         }
     ]
 }

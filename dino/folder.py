@@ -1,9 +1,11 @@
 import os
 import glob
 import math
+from typing import *
 
 import torch
 import numpy as np
+import pytorch_lightning as pl
 from PIL import Image
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
@@ -57,7 +59,7 @@ class ImageFolder(Dataset):
 
 class KpImageFolder(ImageFolder):
 
-    def __getitem__(self, index) -> torch.Tensor:
+    def __getitem__(self, index) -> Dict[str, torch.Tensor]:
         if self.max_num is not None:
             n = len(self.img_list)
             mul = math.ceil(n / self.max_num)
@@ -65,44 +67,52 @@ class KpImageFolder(ImageFolder):
         pil_img = Image.open(self.img_list[index]).convert("RGB")
         
         if self.transforms:
-            img, _ = self.transforms(pil_img, index)
+            datas = self.transforms(pil_img, index)
+            return datas
         else:
             raise RuntimeError('Need transforms to genreating keypoints')
-        return img, index
 
 
 class LitImgFolder(pl.LightningDataModule):
 
-    def __init__(self, root_dir, batch_size=32, num_worker=16, split=0.01, step_per_epoch=100_000):
+    def __init__(self, root_dir, transform, batch_size=32, num_worker=16, split=0.01, step_per_epoch=100_000):
+        super().__init__()
         self.root = root_dir
         self.batch_size = batch_size
         self.num_worker = num_worker
         self.split = split
         self.steps = step_per_epoch
+        self.transform = transform
+        assert self.batch_size % (self.transform.n_derive + 1) == 0, \
+            f"{self.batch_size} % {self.transform.n_derive}"
     
     def train_dataloader(self) -> DataLoader:
         slice_range = (0, 1 - self.split)
-        train_dataset = ImageFolder(
+        train_dataset = KpImageFolder(
             self.root,
-            transform=[],
+            transform=self.transform,
             slice=slice_range,
             max_indice=self.steps)
         train_loader = DataLoader(
             train_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.batch_size // (self.transform.n_derive + 1),
             num_workers=self.num_worker,
-            worker_init_fn=utils.worker_init_fn)
+            collate_fn=self.transform.collect,
+            worker_init_fn=utils.worker_init_fn,
+            pin_memory=False)
         return train_loader
     
     def val_dataloader(self) -> DataLoader:
         slice_range = (1 - self.split, 1)
-        val_dataset = ImageFolder(
+        val_dataset = KpImageFolder(
             self.root,
-            transform=[],
+            transform=self.transform,
             slice=slice_range)
         val_loader = DataLoader(
             val_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.batch_size // (self.transform.n_derive + 1),
             num_workers=self.num_worker,
-            worker_init_fn=utils.worker_init_fn)
+            collate_fn=self.transform.collect,
+            worker_init_fn=utils.worker_init_fn,
+            pin_memory=False)
         return val_loader

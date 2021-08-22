@@ -49,4 +49,5 @@ def set_COTR_arguments(parser):
     cotr_arg.add_argument('--enc_layers', type=int, default=6)
     cotr_arg.add_argument('--dec_layers', type=int, default=6)
     cotr_arg.add_argument('--position_embedding', type=str, default='lin_sine', help='sine wave type')
+    cotr_arg.add_argument('--cat_img', type=bool, default=True, help='sine wave type')
 
