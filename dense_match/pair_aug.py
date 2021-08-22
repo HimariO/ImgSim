@@ -28,11 +28,12 @@ class MetaKP:
 
 class PairAug:
 
-    def __init__(self, n_deriv=3, output_size=[320, 320], sample_rate=16):
+    def __init__(self, n_deriv=3, output_size=[320, 320], sample_rate=16, norm=True):
         self.n_derive = n_deriv
         self.output_size = output_size
         self.grid_size = output_size[0] // sample_rate
         self.grid_cell = output_size[0] // self.grid_size
+        self.norm = norm
     
     @staticmethod
     def collect(batch: List[Dict[str, list]]):
@@ -104,13 +105,13 @@ class PairAug:
                 iaa.Fliplr(p=0.5),
                 iaa.Flipud(p=0.5),
                 iaa.Sometimes(0.5, iaa.Rotate(rotate=(-90, 90))),
-                iaa.OneOf([
+                iaa.Sometimes(0.5, iaa.OneOf([
                     iaa.PiecewiseAffine(scale=(0.01, 0.1)),
                     iaa.ShearX((-20, 20)),
                     iaa.ShearY((-20, 20)),
                     iaa.ScaleX((0.5, 1.5)),
                     iaa.ScaleY((0.5, 1.5)),
-                ]),
+                ])),
                 iaa.Sometimes(0.1, iaa.Jigsaw(nb_rows=8, nb_cols=8, max_steps=(3, 3))),
             ])
         return self._gemo_trans
@@ -176,6 +177,9 @@ class PairAug:
             x, y = kp.src_grid_kp
             onehot[x, y, round(ax), round(ay)] = 1
         return onehot
+    
+    def _norm_image(self, x):
+        return tvtf.normalize(tvtf.to_tensor(x), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
     def __call__(self, image: Image, index: int) -> Dict[str, torch.Tensor]:
         np_img = np.asarray(image)
@@ -186,19 +190,15 @@ class PairAug:
         target_corrs = []
         for _ in range(self.n_derive):
             deriv_img, kps = self.gemo_transf(image=base_img, keypoints=self.grid_kp)
-            # deriv_img, kps = self.color_transf(image=deriv_img, keypoints=kps)
+            deriv_img, kps = self.color_transf(image=deriv_img, keypoints=kps)
             mkps = self.filter_insert_kp_mtea(kps, index)
             assert deriv_img.shape == base_img.shape, f"{deriv_img.shape} != {base_img.shape}"
-            deriv_img = tvtf.normalize(
-                tvtf.to_tensor(deriv_img),
-                (0.485, 0.456, 0.406),
-                (0.229, 0.224, 0.225))
-            
+            deriv_img = self._norm_image(deriv_img) if self.norm else torch.from_numpy(deriv_img)
             aug_imgs.append(deriv_img)
             aug_kps.append(mkps)
             target_corrs.append(self.kp_to_4d_onehot(mkps))
         
-        base_img = tvtf.normalize(tvtf.to_tensor(base_img), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        base_img = self._norm_image(base_img) if self.norm else torch.from_numpy(base_img)
         
         return {
             "base_img": base_img,

@@ -70,6 +70,9 @@ lit_img = folder.LitImgFolder(
 #     if i > 64: break
 
 model = cotr()
+state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
+model.load_state_dict(state, strict=False)
+
 trainer = pl.Trainer(
     accumulate_grad_batches=1,
     val_check_interval=1.0,
