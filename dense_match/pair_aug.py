@@ -175,7 +175,7 @@ class PairAug:
         for kp in kps:
             ax, ay = kp.aug_grid_kp
             x, y = kp.src_grid_kp
-            onehot[x, y, round(ax), round(ay)] = 1
+            onehot[y, x, round(ay), round(ax)] = 1
         return onehot
     
     def _norm_image(self, x):
