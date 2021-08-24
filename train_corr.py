@@ -5,6 +5,7 @@ import fire
 import numpy as np
 import torch
 import pytorch_lightning as pl
+from loguru import logger
 
 
 from COTR.models.cotr_model import COTR, build
@@ -55,35 +56,50 @@ def cotr():
     cotr = LitCOTR(args, args)
     return cotr
 
-p_aug = PairAug(n_deriv=3, output_size=[320, 320])
-lit_img = folder.LitImgFolder(
-    '/home/ron/Downloads/fb-isc/query',
-    p_aug,
-    batch_size=32,
-    num_worker=20)
+with logger.catch():
+    p_aug = PairAug(n_deriv=3, output_size=[256, 256])
+    lit_img = folder.LitImgFolder(
+        '/home/ron/Downloads/fb-isc/train',
+        p_aug,
+        batch_size=48,
+        num_worker=24)
+    
+    print(len(lit_img.train_dataloader().dataset))
+    print(len(lit_img.train_dataloader().dataset.img_list))
+    print(len(lit_img.val_dataloader().dataset))
+    print(len(lit_img.val_dataloader().dataset.img_list))
 
-# A = time.time()
-# for i, data in enumerate(lit_img.train_dataloader()):
-#     D = time.time() - A
-#     A = time.time()
-#     print(i, f"{D:.5f}", 'base_img: ', data['base_img'].shape, 'aug_imgs: ', data['aug_imgs'].shape)
-#     if i > 64: break
+    # A = time.time()
+    # for i, data in enumerate(lit_img.train_dataloader()):
+    #     D = time.time() - A
+    #     A = time.time()
+    #     print(i, f"{D:.5f}", 'base_img: ', data['base_img'].shape, 'aug_imgs: ', data['aug_imgs'].shape)
+    #     if i > 64: break
 
-model = cotr()
-state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
-model.load_state_dict(state, strict=False)
+    model = cotr()
+    state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
+    model.load_state_dict(state, strict=False)
 
-trainer = pl.Trainer(
-    accumulate_grad_batches=1,
-    val_check_interval=1.0,
-    checkpoint_callback=False,
-    callbacks=[],
-    default_root_dir='checkpoints/overfit',
-    gpus=1,
-    precision=16,
-    max_steps=1000,
-    overfit_batches=128,
-    limit_val_batches=0,
-)
+    trainer = pl.Trainer(
+        accumulate_grad_batches=1,
+        val_check_interval=1.0,
+        checkpoint_callback=True,
+        callbacks=[],
+        default_root_dir='checkpoints/train',
+        gpus=1,
+        precision=16,
+    )
+    # trainer = pl.Trainer(
+    #     accumulate_grad_batches=1,
+    #     val_check_interval=1.0,
+    #     checkpoint_callback=False,
+    #     callbacks=[],
+    #     default_root_dir='checkpoints/overfit',
+    #     gpus=1,
+    #     precision=16,
+    #     max_steps=1000,
+    #     overfit_batches=128,
+    #     limit_val_batches=0,
+    # )
 
-trainer.fit(model, datamodule=lit_img)
+    trainer.fit(model, datamodule=lit_img)

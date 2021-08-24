@@ -15,7 +15,7 @@ from .misc import (NestedTensor, nested_tensor_from_tensor_list)
 from .backbone import build_backbone
 from .transformer import build_halfformer
 from .position_encoding import NerfPositionalEncoding, MLP
-
+from dense_match.margin import SampledMarginLoss
 
 class NormMeanSquaredError(torchmetrics.MeanSquaredError):
     
@@ -28,10 +28,34 @@ class NormMeanSquaredError(torchmetrics.MeanSquaredError):
         """
         sum_squared_error = torch.nn.functional.mse_loss(preds, target)
         sum_squared_error = sum_squared_error.sum() / target.sum()
-        n_obs = len(preds)
+        n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
 
         self.sum_squared_error += sum_squared_error
         self.total += n_obs
+        return sum_squared_error
+
+
+class MovingSampleMargin(torchmetrics.MeanSquaredError):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        sampling_args = kwargs.pop('sampling_args', {})
+        margin_args = kwargs.pop('margin_args', {})
+        self.loss_fn = SampledMarginLoss(sampling_args=sampling_args, margin_args=margin_args)
+    
+    def update(self, embed: torch.Tensor, target: torch.Tensor):
+        """Update state with predictions and targets.
+
+        Args:
+            embed: Predictions from model
+            target: Ground truth values
+        """
+        sum_squared_error = self.loss_fn(embed, target)
+        n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
+
+        self.sum_squared_error += sum_squared_error
+        self.total += n_obs
+        return sum_squared_error
 
 
 class LitCOTR(pl.LightningModule):
@@ -44,8 +68,11 @@ class LitCOTR(pl.LightningModule):
         self.backbone = build_backbone(edict(backbone_args))
         self.input_proj = nn.Conv2d(self.backbone.num_channels, hidden_dim, kernel_size=1)
         
-        self.train_mse = torchmetrics.MeanSquaredError()
-        self.val_mse = torchmetrics.MeanSquaredError()
+        self.train_mse = NormMeanSquaredError()
+        self.train_margin = MovingSampleMargin()
+        self.val_mse = NormMeanSquaredError()
+        
+        # self.sample_margin = SampledMarginLoss()
     
     def correlation(self, feat_map_a, feat_map_b):
         h, w = feat_map_a.shape[-2:]
@@ -82,13 +109,25 @@ class LitCOTR(pl.LightningModule):
         n_ref_hs = n_ref_hs.view(b * n_der, c, h, w)
         
         pred_corr_volum = self.correlation(n_ref_hs, aug_hs)
-        corr_loss = torch.nn.functional.mse_loss(pred_corr_volum, batch['target_corrs'])
-        corr_loss = corr_loss.sum() / batch['target_corrs'].sum()
+        # corr_loss = torch.nn.functional.mse_loss(pred_corr_volum, batch['target_corrs'])
+        # corr_loss = corr_loss.sum() / batch['target_corrs'].sum()
+        corr_loss = self.train_mse(pred_corr_volum, batch['target_corrs'])
+        margin_loss = self.train_margin(
+            torch.cat([
+                torch.mean(ref_hs, dim=[2, 3]),
+                torch.mean(aug_hs, dim=[2, 3]),
+            ]),
+            torch.cat([
+                batch['base_img_idx'],
+                batch['aug_img_idx'],
+            ])
+        )
         
-        self.log('train_mse_step', self.train_mse(pred_corr_volum, batch['target_corrs']), prog_bar=True)
+        self.log('train_mse_step', self.train_mse.compute(), prog_bar=True)
+        self.log('train_margin_step', self.train_margin.compute(), prog_bar=True)
         # if batch_idx % 10 == 0:
         #     self.logger.experiment.add_scalar()
-        return corr_loss
+        return corr_loss + margin_loss
     
     def validation_step(self, batch, batch_idx):
         ref_hs = self.forward(NestedTensor(batch['base_img'], torch.zeros_like(batch['base_img'])))
@@ -107,9 +146,15 @@ class LitCOTR(pl.LightningModule):
             'corr_loss': corr_loss,
         }
 
+    def training_epoch_end(self, training_step_outputs):
+        self.log('train_mse_epoch', self.train_mse.compute())
+        self.train_mse.reset()
+        self.log('train_margin_epoch', self.train_margin.compute())
+        self.train_margin.reset()
+    
     def validation_epoch_end(self, validation_step_outputs):
         self.log('val_mse_epoch', self.val_mse.compute(), prog_bar=True)
         self.val_mse.reset()
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=0.00001)
+        return torch.optim.AdamW(self.parameters(), lr=0.0001)

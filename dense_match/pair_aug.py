@@ -49,6 +49,11 @@ class PairAug:
                     batched[k] = torch.stack(v)
                 elif 6 > v[0].ndim > 3:
                     batched[k] = torch.cat(v)
+                elif v[0].ndim == 1:
+                    if 'img_idx' in k:
+                        batched[k] = torch.cat(v)
+                    else:
+                        raise ValueError(f'{v[0].ndim}')
                 else:
                     raise ValueError(f'{v[0].ndim}')
             elif type(v[0]) is list:
@@ -204,7 +209,9 @@ class PairAug:
             "base_img": base_img,
             "aug_imgs": torch.stack(aug_imgs),
             "aug_kps": aug_kps,
-            "target_corrs": torch.stack(target_corrs)
+            "target_corrs": torch.stack(target_corrs),
+            "base_img_idx": torch.tensor([index]),
+            "aug_img_idx": torch.tensor([index] * (self.n_derive)),
         }
 
 

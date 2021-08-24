@@ -33,7 +33,7 @@ class ImageFolder(Dataset):
         
         if slice is not None:
             n = len(self.img_list)
-            self.img_list[math.floor(slice[0] * n): math.floor(slice[1] * n)]
+            self.img_list = self.img_list[math.floor(slice[0] * n): math.floor(slice[1] * n)]
 
         self.transforms = transform
     
@@ -75,7 +75,8 @@ class KpImageFolder(ImageFolder):
 
 class LitImgFolder(pl.LightningDataModule):
 
-    def __init__(self, root_dir, transform, batch_size=32, num_worker=16, split=0.01, step_per_epoch=100_000):
+    def __init__(self, root_dir, transform, batch_size=32, num_worker=16, 
+                split=0.01, step_per_epoch=100_000, shuffle=True):
         super().__init__()
         self.root = root_dir
         self.batch_size = batch_size
@@ -83,6 +84,7 @@ class LitImgFolder(pl.LightningDataModule):
         self.split = split
         self.steps = step_per_epoch
         self.transform = transform
+        self.shuffle = shuffle
         assert self.batch_size % (self.transform.n_derive + 1) == 0, \
             f"{self.batch_size} % {self.transform.n_derive}"
     
@@ -99,6 +101,7 @@ class LitImgFolder(pl.LightningDataModule):
             num_workers=self.num_worker,
             collate_fn=self.transform.collect,
             worker_init_fn=utils.worker_init_fn,
+            shuffle=self.shuffle,
             pin_memory=False)
         return train_loader
     
@@ -114,5 +117,6 @@ class LitImgFolder(pl.LightningDataModule):
             num_workers=self.num_worker,
             collate_fn=self.transform.collect,
             worker_init_fn=utils.worker_init_fn,
+            shuffle=self.shuffle,
             pin_memory=False)
         return val_loader
