@@ -45,6 +45,7 @@ def cotr():
         "dec_layers": 6,
         "position_embedding": 'lin_sine',
         "cat_img": False,
+        # "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process
     }
     layer_2_channels = {
         'layer1': 256,
@@ -61,7 +62,7 @@ with logger.catch():
     lit_img = folder.LitImgFolder(
         '/home/ron/Downloads/fb-isc/train',
         p_aug,
-        batch_size=48,
+        batch_size=96,
         num_worker=24)
     
     print(len(lit_img.train_dataloader().dataset))
@@ -88,6 +89,7 @@ with logger.catch():
         default_root_dir='checkpoints/train',
         gpus=1,
         precision=16,
+        terminate_on_nan=True,
     )
     # trainer = pl.Trainer(
     #     accumulate_grad_batches=1,

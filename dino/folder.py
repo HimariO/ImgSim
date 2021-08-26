@@ -102,7 +102,7 @@ class LitImgFolder(pl.LightningDataModule):
             collate_fn=self.transform.collect,
             worker_init_fn=utils.worker_init_fn,
             shuffle=self.shuffle,
-            pin_memory=False)
+            pin_memory=True)
         return train_loader
     
     def val_dataloader(self) -> DataLoader:
@@ -118,5 +118,5 @@ class LitImgFolder(pl.LightningDataModule):
             collate_fn=self.transform.collect,
             worker_init_fn=utils.worker_init_fn,
             shuffle=self.shuffle,
-            pin_memory=False)
+            pin_memory=True)
         return val_loader

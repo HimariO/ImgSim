@@ -67,7 +67,7 @@ class BackboneBase(nn.Module):
                 cat_img=True):
         super().__init__()
         for name, parameter in backbone.named_parameters():
-            if not train_backbone or 'layer2' not in name and 'layer3' not in name and 'layer4' not in name:
+            if not train_backbone or ('layer2' not in name and 'layer3' not in name and 'layer4' not in name):
                 parameter.requires_grad_(False)
                 print(f'freeze {name}')
         

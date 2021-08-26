@@ -67,7 +67,6 @@ class Halfformer(nn.Module):
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation)
         self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers)
-
         self._reset_parameters()
 
         self.d_model = d_model
@@ -83,10 +82,13 @@ class Halfformer(nn.Module):
         bs, c, h, w = src.shape
         src = src.flatten(2).permute(2, 0, 1)
         pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
-        mask = mask.flatten(1)
+        if mask is not None:
+            mask = mask.flatten(1)
 
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
-        return memory.permute(1, 2, 0).view(bs, c, h, w)
+        # [256, 12, 256] -> [12, 256, 16, 16]
+        memory = memory.permute(1, 2, 0).view(bs, c, h, w)
+        return memory
 
 
 class TransformerEncoder(nn.Module):
@@ -177,17 +179,21 @@ class TransformerEncoderLayer(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 pos: Optional[Tensor] = None):
         q = k = self.with_pos_embed(src, pos)
+        v = src
         src2 = self.self_attn(query=q,
                               key=k,
-                              value=src,
+                              value=v,
                               attn_mask=src_mask,
                               key_padding_mask=src_key_padding_mask)[0]
         src = src + self.dropout1(src2)
-        src = self.norm1(src)
-        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
-        src = src + self.dropout2(src2)
-        src = self.norm2(src)
-        return src
+        src_n1 = self.norm1(src)
+        src3 = self.linear2(self.dropout(self.activation(self.linear1(src_n1))))
+        src4 = src_n1 + self.dropout2(src3)
+        src_n2 = self.norm2(src4)
+
+        # if torch.any(torch.isnan(src_n2)):
+        #     breakpoint()
+        return src_n2
 
 
 class TransformerDecoderLayer(nn.Module):
@@ -236,7 +242,7 @@ def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
-def build_transformer(args):
+def build_transformer(args) -> Transformer:
     return Transformer(
         d_model=args.hidden_dim,
         dropout=args.dropout,
@@ -247,7 +253,7 @@ def build_transformer(args):
         return_intermediate_dec=True,
     )
 
-def build_halfformer(args):
+def build_halfformer(args) -> Halfformer:
     return Halfformer(
         d_model=args.hidden_dim,
         dropout=args.dropout,
