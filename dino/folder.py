@@ -42,9 +42,10 @@ class ImageFolder(Dataset):
     
     def __getitem__(self, index) -> torch.Tensor:
         if self.max_num is not None:
-            n = len(self.img_list)
-            mul = math.ceil(n / self.max_num)
-            index = (index * mul) % n
+            if self.max_num < list(self.img_list):
+                n = len(self.img_list)
+                mul = math.ceil(n / self.max_num)
+                index = (index * mul) % n
         pil_img = Image.open(self.img_list[index]).convert("RGB")
         if self.transforms:
             img = self.transforms(pil_img)
@@ -110,7 +111,8 @@ class LitImgFolder(pl.LightningDataModule):
         val_dataset = KpImageFolder(
             self.root,
             transform=self.transform,
-            slice=slice_range)
+            slice=slice_range,
+            max_indice=10000)
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.batch_size // (self.transform.n_derive + 1),

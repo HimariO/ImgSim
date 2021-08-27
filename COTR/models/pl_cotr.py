@@ -181,8 +181,7 @@ class LitCOTR(pl.LightningModule):
             )
             self.log('val_margin_step', self.val_margin.compute(), prog_bar=True)
         except ValueError as e:
-            if batch_idx > 2:
-                logger.exception(str(e))
+            logger.exception(str(e))
         return {
             'pred_corr_volum': pred_corr_volum,
             'corr_loss': corr_loss,
