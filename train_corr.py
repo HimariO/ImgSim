@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import pytorch_lightning as pl
 from loguru import logger
+from einops import rearrange
 
 
 from COTR.models.cotr_model import COTR, build
@@ -14,7 +15,8 @@ from COTR.models.pl_cotr import LitCOTR
 from COTR.options.options import *
 from COTR.options.options_utils import *
 from dino import folder
-from dense_match.pair_aug import PairAug
+from dense_match.pair_aug import PairAug, CacheAuged
+from visual_util import CorrVis
 
 
 def _cotr():
@@ -34,7 +36,7 @@ def _cotr():
     opt.dim_feedforward = layer_2_channels[opt.layer]
     return build(opt)
 
-def cotr():
+def build_cotr(ckpt=None):
     args = {
         "backbone": 'resnet50',
         "hidden_dim": 256,
@@ -55,13 +57,18 @@ def cotr():
         'layer4': 2048,
     }
     args['dim_feedforward'] = layer_2_channels[args['layer']]
-    # cotr = LitCOTR(args, args)
-    # state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
-    # cotr.load_state_dict(state, strict=False)
-    cotr = LitCOTR.load_from_checkpoint(
-        '/home/ron/Projects/ImgSim/checkpoints/train/lightning_logs/version_26/checkpoints/epoch=1-step=8333.ckpt',
-        trasnformer_args=args,
-        backbone_args=args)
+
+    if ckpt is not None:
+        logger.info(f"Load checkpoint: {os.path.basename(ckpt)}")
+        cotr = LitCOTR.load_from_checkpoint(
+            ckpt,
+            trasnformer_args=args,
+            backbone_args=args)
+    else:
+        cotr = LitCOTR(args, args)
+        state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
+        cotr.load_state_dict(state, strict=False)
+
     return cotr
 
 
@@ -73,27 +80,54 @@ def debug_dataset(lit_img: folder.LitImgFolder):
     print(len(val_loader.dataset))
     print(len(val_loader.dataset.img_list))
 
-    A = time.time()
+    A = B= time.time()
+    N = 128
     for i, data in enumerate(val_loader):
         D = time.time() - A
         A = time.time()
-        print(i, f"{D:.5f}", 'base_img: ', data['base_img'].shape, 'aug_imgs: ', data['aug_imgs'].shape)
-        print(data['base_img_idx'])
-        print(data['aug_img_idx'])
-        if i > 8: sys.exit(0)
+        logger.info(f"[{i}] {D:.5f}")
+        # print('base_img: ', data['base_img'].shape, 'aug_imgs: ', data['aug_imgs'].shape)
+        # print(data['base_img_idx'])
+        # print(data['aug_img_idx'])
+        if i > N: break
+    D = time.time() - B
+    speed = D / N
+    logger.info(f"{speed} = {D} / {N}")
+    sys.exit(0)
 
 
-with logger.catch():
+def model_profiling(model: LitCOTR, lit_img: folder.LitImgFolder):
+    model = model.cuda()
+    
+    val_loader = lit_img.val_dataloader()
+    batches = []
+    for i, data in enumerate(val_loader):
+        logger.info(f'Load batch: {i}')
+        data = {k: v.cuda() for k, v in data.items() if type(v) is torch.Tensor}
+        batches.append(data)
+        if i > 1: break
+    
+    start_time = time.time()
+    iters = 1024
+    for i in range(iters):
+        # loss = model.training_step(batches[0], 0)
+        logger.info(f"{i}/{iters}")
+        loss = model.forward_step(batches[0], 0)
+        
+    elapsed = time.time() - start_time
+    speed = elapsed / iters
+    print(f"{speed:.4f} = {elapsed:.4f} / {iters}")
+
+@logger.catch
+def train(ckpt=None):
     p_aug = PairAug(n_deriv=3, output_size=[256, 256])
     lit_img = folder.LitImgFolder(
         '/home/ron/Downloads/fb-isc/train',
         p_aug,
         batch_size=96,
-        num_worker=30)
+        num_worker=24)
     
-    # debug_dataset(lit_img)
-
-    model = cotr()
+    model = build_cotr(ckpt=ckpt)
 
     trainer = pl.Trainer(
         accumulate_grad_batches=1,
@@ -119,3 +153,62 @@ with logger.catch():
     # )
 
     trainer.fit(model, datamodule=lit_img)
+
+
+@logger.catch
+def debug():
+    p_aug = PairAug(n_deriv=3, norm=True, output_size=[256, 256])
+    lit_img = folder.LitImgFolder(
+        '/home/ron/Downloads/fb-isc/train',
+        p_aug,
+        batch_size=96,
+        num_worker=24)
+    
+    debug_dataset(lit_img)
+
+    # model = build_cotr()
+    # model_profiling(model, lit_img)
+
+
+@logger.catch(reraise=True)
+def vis_corr(ckpt):
+    p_aug = PairAug(n_deriv=3, norm=False, output_size=[256, 256])
+    lit_img = folder.LitImgFolder(
+        '/home/ron/Downloads/fb-isc/train',
+        p_aug,
+        batch_size=8,
+        num_worker=16)
+    model = build_cotr(ckpt=ckpt).cuda()
+
+    vis = CorrVis(p_aug.grid_size)
+    val_loader = lit_img.val_dataloader()
+    with torch.no_grad():
+        for i, batch in enumerate(val_loader):
+            data = {
+                k: (p_aug._norm_image(rearrange(v, 'b h w c->b c h w').float()).cuda()
+                    if k in ['aug_imgs', 'base_img']
+                    else v.cuda())
+                for k, v in batch.items()
+                if type(v) is torch.Tensor
+            }
+            # data['aug_imgs'] = p_aug._norm_image(data['aug_imgs'])
+            # data['base_img'] = p_aug._norm_image(data['base_img'])
+            pred_dict = model.forward_step(data, i)
+            print('corr_loss: ', pred_dict['corr_loss'])
+
+            corrs = pred_dict['pred_corr_volum'].cpu()
+            for j, aug_img in enumerate(batch['aug_imgs'].cpu().numpy()):
+                base = batch['base_img'][j // p_aug.n_derive]
+                corr = corrs[j]
+                vis.show_corr_mapping(corr, base, aug_img)
+
+            if i > 1:
+                break
+
+
+if __name__ == '__main__':
+    fire.Fire({
+        'debug': debug,
+        'train': train,
+        'vis': vis_corr,
+    })

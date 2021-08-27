@@ -1,20 +1,24 @@
+import time
 import itertools
 import functools
-from re import L
 from typing import *
 from dataclasses import dataclass
 from collections import defaultdict
 
 import cv2
-from imgaug.augmenters.meta import OneOf
-from imgaug.augmenters.size import CropToFixedSize
+import numba
 import torch
 import numpy as np
 import imgaug as ia
 from PIL import Image
+from imgaug.augmenters.meta import OneOf
+from imgaug.augmenters.size import CropToFixedSize
 from imgaug import augmenters as iaa
 from imgaug.augmentables import Keypoint, KeypointsOnImage
 from torchvision.transforms import functional as tvtf
+
+
+def reduce_list(a, b): return a + b
 
 
 @dataclass
@@ -57,7 +61,7 @@ class PairAug:
                 else:
                     raise ValueError(f'{v[0].ndim}')
             elif type(v[0]) is list:
-                batched[k] = functools.reduce(lambda a, b: a + b, v)
+                batched[k] = functools.reduce(reduce_list, v)
             else:
                 raise RuntimeError()
         return batched
@@ -117,7 +121,15 @@ class PairAug:
                     iaa.ScaleX((0.5, 1.5)),
                     iaa.ScaleY((0.5, 1.5)),
                 ])),
-                iaa.Sometimes(0.1, iaa.Jigsaw(nb_rows=8, nb_cols=8, max_steps=(3, 3))),
+                iaa.Sometimes(0.2, 
+                    iaa.OneOf([
+                        iaa.Sometimes(0.25, iaa.Jigsaw(nb_rows=8, nb_cols=8, max_steps=(3, 3))),
+                        iaa.Sequential([
+                            iaa.Resize((0.4, 0.8)),
+                            iaa.PadToFixedSize(*self.output_size)
+                        ])
+                    ])
+                ),
             ])
         return self._gemo_trans
     
@@ -184,9 +196,18 @@ class PairAug:
         return onehot
     
     def _norm_image(self, x):
-        return tvtf.normalize(tvtf.to_tensor(x), (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        if not type(x) is torch.Tensor:
+            x = tvtf.to_tensor(x)
+        return tvtf.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
 
     def __call__(self, image: Image, index: int) -> Dict[str, torch.Tensor]:
+        """
+        batch size 96
+        gemo_transf + color_transf = 1.51 sec per batch
+        color_transf = 0.3 sec per batch
+        gemo_transf(plus extra ndarray copy) = 1.49 sec
+        """
+        A = time.time()
         np_img = np.asarray(image)
 
         base_img = self.uni_size_transf(image=np_img)
@@ -204,7 +225,47 @@ class PairAug:
             target_corrs.append(self.kp_to_4d_onehot(mkps))
         
         base_img = self._norm_image(base_img) if self.norm else torch.from_numpy(base_img)
+        # print(f"{time.time() - A:.4f}")
+        return {
+            "base_img": base_img,
+            "aug_imgs": torch.stack(aug_imgs),
+            "aug_kps": aug_kps,
+            "target_corrs": torch.stack(target_corrs),
+            "base_img_idx": torch.tensor([index]),
+            "aug_img_idx": torch.tensor([index] * (self.n_derive)),
+        }
+
+
+
+class CacheAuged(PairAug):
+
+    def __call__(self, image: Image, index: int) -> Dict[str, torch.Tensor]:
+        """
+        batch size 96
+        gemo_transf + color_transf = 1.51 sec per batch
+        color_transf = 0.3 sec per batch
+        gemo_transf(plus extra ndarray copy) = 1.49 sec
+        """
+        A = time.time()
+        np_img = np.asarray(image)
+
+        base_img = self.uni_size_transf(image=np_img)
+        aug_imgs = []
+        aug_kps = []
+        target_corrs = []
+        for _ in range(self.n_derive):
+            deriv_img = base_img.copy()
+            kps = self.grid_kp.deepcopy()
+
+            mkps = self.filter_insert_kp_mtea(kps, index)
+            assert deriv_img.shape == base_img.shape, f"{deriv_img.shape} != {base_img.shape}"
+            deriv_img = self._norm_image(deriv_img) if self.norm else torch.from_numpy(deriv_img.copy)
+            aug_imgs.append(deriv_img)
+            aug_kps.append(mkps)
+            target_corrs.append(self.kp_to_4d_onehot(mkps))
         
+        base_img = self._norm_image(base_img) if self.norm else torch.from_numpy(base_img)
+        # print(f"{time.time() - A:.4f}")
         return {
             "base_img": base_img,
             "aug_imgs": torch.stack(aug_imgs),

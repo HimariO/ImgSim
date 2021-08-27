@@ -1,6 +1,7 @@
 import math
 from typing import *
 
+import pysnooper
 import numpy as np
 import torch
 import torchmetrics
@@ -89,7 +90,7 @@ class LitCOTR(pl.LightningModule):
         batched_feat_vec_b = rearrange(feat_map_b, "b c h w -> b c (h w)")
         corr_volume = torch.bmm(batched_feat_vec_a, batched_feat_vec_b)
         corr_volume = rearrange(corr_volume, "b (h1 w1) (h2 w2) -> b h1 w1 h2 w2", h1=h, h2=h, w1=w, w2=w)
-        return corr_volume
+        return torch.clip(corr_volume, min=0)
     
     def norm_4d(self, x):
         h = x.flatten(-2, -1)
@@ -116,6 +117,37 @@ class LitCOTR(pl.LightningModule):
     
     def forward_compare(img_a, img_b):
         pass
+    
+    # @pysnooper.snoop()
+    def forward_step(self, batch: Dict[str, torch.Tensor], batch_idx):
+        nest_base = NestedTensor(batch['base_img'], torch.zeros_like(batch['base_img']))
+        nest_aug = NestedTensor(batch['aug_imgs'], torch.zeros_like(batch['aug_imgs']))
+        ref_hs, ref_emb, tmp1 = self.forward(nest_base)
+        aug_hs, aug_emb, tmp2 = self.forward(nest_aug)
+        assert len(aug_hs) % len(ref_hs) == 0
+        b, c, h ,w = ref_hs.shape
+        n_der = len(aug_hs) // len(ref_hs)
+        n_ref_hs = repeat(ref_hs, f"b c h w->b ({n_der} c) h w")
+        n_ref_hs = n_ref_hs.view(b * n_der, c, h, w)
+        
+        pred_corr_volum = self.correlation(n_ref_hs, aug_hs)
+        corr_loss = self.train_mse(pred_corr_volum, batch['target_corrs'])
+        margin_loss = self.train_margin(
+            torch.cat([
+                torch.mean(ref_emb, dim=[2, 3]),
+                torch.mean(aug_emb, dim=[2, 3]),
+            ]),
+            torch.cat([
+                batch['base_img_idx'],
+                batch['aug_img_idx'],
+            ])
+        )
+        return {
+            'pred_corr_volum': pred_corr_volum,
+            'ref_emb': ref_emb,
+            'aug_emb': aug_emb,
+            'corr_loss': corr_loss,
+        }
     
     def training_step(self, batch: Dict[str, torch.Tensor], batch_idx):
         nest_base = NestedTensor(batch['base_img'], torch.zeros_like(batch['base_img']))

@@ -34,7 +34,18 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "args": [
-                
+                "train"
+            ]
+        },
+        {
+            "name": "train_corr.py visualize",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_corr.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "vis", "checkpoints/train/lightning_logs/version_27/checkpoints/epoch=2-step=12500.ckpt"
             ]
         }
     ]
