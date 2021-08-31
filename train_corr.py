@@ -48,7 +48,7 @@ def build_cotr(ckpt=None):
         "dec_layers": 6,
         "position_embedding": 'lin_sine',
         "cat_img": False,
-        # "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process as CNN feature scale going up.
+        "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process as CNN feature scale going up.
     }
     layer_2_channels = {
         'layer1': 256,
@@ -118,8 +118,8 @@ def model_profiling(model: LitCOTR, lit_img: folder.LitImgFolder):
     speed = elapsed / iters
     print(f"{speed:.4f} = {elapsed:.4f} / {iters}")
 
-@logger.catch
-def train(ckpt=None):
+@logger.catch(reraise=True)
+def train(ckpt=None, overfit=False):
     p_aug = PairAug(n_deriv=3, output_size=[256, 256])
     lit_img = folder.LitImgFolder(
         '/home/ron/Downloads/fb-isc/train',
@@ -129,30 +129,54 @@ def train(ckpt=None):
     
     model = build_cotr(ckpt=ckpt)
 
-    trainer = pl.Trainer(
-        accumulate_grad_batches=1,
-        val_check_interval=1.0,
-        checkpoint_callback=True,
-        callbacks=[],
-        default_root_dir='checkpoints/train',
-        gpus=1,
-        precision=16,
-        terminate_on_nan=True,
-    )
-    # trainer = pl.Trainer(
-    #     accumulate_grad_batches=1,
-    #     val_check_interval=1.0,
-    #     checkpoint_callback=False,
-    #     callbacks=[],
-    #     default_root_dir='checkpoints/overfit',
-    #     gpus=1,
-    #     precision=16,
-    #     max_steps=1000,
-    #     overfit_batches=128,
-    #     limit_val_batches=0,
-    # )
+    if overfit:
+        logger.debug('Try to overfit on batch')
+        trainer = pl.Trainer(
+            accumulate_grad_batches=1,
+            val_check_interval=1.0,
+            checkpoint_callback=False,
+            callbacks=[],
+            default_root_dir='checkpoints/overfit',
+            gpus=1,
+            precision=16,
+            max_steps=1000,
+            overfit_batches=128,
+            limit_val_batches=0,
+        )
 
-    trainer.fit(model, datamodule=lit_img)
+        """
+        manual overfit rountine
+        """
+        _loader = lit_img.train_dataloader()
+        _batch = next(iter(_loader))
+        batch = {k: v.cuda() for k, v in _batch.items() if type(v) is torch.Tensor}
+        adam = model.configure_optimizers()
+        model = model.cuda()
+        
+        for step in range(64):
+            adam.zero_grad()
+            pred = model.forward_step(batch, 0)
+            pred['corr_loss'].backward()
+            adam.step()
+            logger.debug(f"step-{step} loss: {pred['corr_loss']}")
+        
+        fit_res = {
+            'batch': batch,
+            'predict': {k: v.detach().cpu() for k, v in pred.items()}
+        }
+        torch.save(fit_res, 'debug.pth')
+    else:
+        trainer = pl.Trainer(
+            accumulate_grad_batches=1,
+            val_check_interval=1.0,
+            checkpoint_callback=True,
+            callbacks=[],
+            default_root_dir='checkpoints/train',
+            gpus=1,
+            precision=16,
+            terminate_on_nan=True,
+        )
+        trainer.fit(model, datamodule=lit_img)
 
 
 @logger.catch
@@ -172,7 +196,7 @@ def debug():
 
 @logger.catch(reraise=True)
 def vis_corr(ckpt):
-    p_aug = PairAug(n_deriv=3, norm=False, output_size=[256, 256])
+    p_aug = PairAug(n_deriv=2, norm=False, output_size=[256, 256])
     lit_img = folder.LitImgFolder(
         '/home/ron/Downloads/fb-isc/train',
         p_aug,
@@ -181,7 +205,7 @@ def vis_corr(ckpt):
     model = build_cotr(ckpt=ckpt).cuda()
 
     vis = CorrVis(p_aug.grid_size)
-    val_loader = lit_img.val_dataloader()
+    val_loader = lit_img.train_dataloader()
     with torch.no_grad():
         for i, batch in enumerate(val_loader):
             data = {
@@ -194,13 +218,14 @@ def vis_corr(ckpt):
             # data['aug_imgs'] = p_aug._norm_image(data['aug_imgs'])
             # data['base_img'] = p_aug._norm_image(data['base_img'])
             pred_dict = model.forward_step(data, i)
-            print('corr_loss: ', pred_dict['corr_loss'])
+            logger.info(f"corr_loss: {pred_dict['corr_loss']}")
 
             corrs = pred_dict['pred_corr_volum'].cpu()
             for j, aug_img in enumerate(batch['aug_imgs'].cpu().numpy()):
                 base = batch['base_img'][j // p_aug.n_derive]
                 corr = corrs[j]
                 vis.show_corr_mapping(corr, base, aug_img)
+                input('Press Enter to show next')
 
             if i > 1:
                 break

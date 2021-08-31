@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 import cv2
+from imgaug.augmenters.geometric import TranslateX
 import numba
 import torch
 import numpy as np
@@ -115,7 +116,7 @@ class PairAug:
                 iaa.Flipud(p=0.5),
                 iaa.Sometimes(0.5, iaa.Rotate(rotate=(-90, 90))),
                 iaa.Sometimes(0.5, iaa.OneOf([
-                    iaa.PiecewiseAffine(scale=(0.01, 0.1)),
+                    # iaa.PiecewiseAffine(scale=(0.01, 0.1)),
                     iaa.ShearX((-20, 20)),
                     iaa.ShearY((-20, 20)),
                     iaa.ScaleX((0.5, 1.5)),
@@ -130,6 +131,8 @@ class PairAug:
                         ])
                     ])
                 ),
+                iaa.TranslateX(percent=(-0.2, 0.2)),
+                iaa.TranslateY(percent=(-0.2, 0.2)),
             ])
         return self._gemo_trans
     
@@ -187,13 +190,26 @@ class PairAug:
                 meta_kps.append(MetaKP(aug_kps, aug_grid_kp, b, index, self.output_size))
         return meta_kps
 
-    def kp_to_4d_onehot(self, kps: List[MetaKP]) -> torch.Tensor:
+    def kp_to_4d_onehot(self, kps: List[MetaKP], mask=False) -> torch.Tensor:
         onehot = torch.zeros([self.grid_size,] * 4, dtype=torch.float32)
         for kp in kps:
             ax, ay = kp.aug_grid_kp
             x, y = kp.src_grid_kp
             onehot[y, x, round(ay), round(ax)] = 1
-        return onehot
+        if mask:
+            mask = torch.normal(mean=torch.zeros_like(onehot), std=1 - onehot)
+            mask = (mask > 1.5).float()  # NOTE: keep around 10% of negative sample
+            mask += onehot
+            return onehot, mask
+        else:
+            return onehot
+    
+    def kp_to_margin_target(self, kps: List[MetaKP]) -> torch.Tensor:
+        for kp in kps:
+            ax, ay = kp.aug_grid_kp
+            ax, ay = round(ay), round(ax)
+            x, y = kp.src_grid_kp
+        raise NotImplementedError()
     
     def _norm_image(self, x):
         if not type(x) is torch.Tensor:
@@ -214,7 +230,8 @@ class PairAug:
         aug_imgs = []
         aug_kps = []
         target_corrs = []
-        for _ in range(self.n_derive):
+        neg_sampling_mask = []
+        for _ in range(self.n_derive): 
             deriv_img, kps = self.gemo_transf(image=base_img, keypoints=self.grid_kp)
             deriv_img, kps = self.color_transf(image=deriv_img, keypoints=kps)
             mkps = self.filter_insert_kp_mtea(kps, index)
@@ -222,7 +239,10 @@ class PairAug:
             deriv_img = self._norm_image(deriv_img) if self.norm else torch.from_numpy(deriv_img)
             aug_imgs.append(deriv_img)
             aug_kps.append(mkps)
-            target_corrs.append(self.kp_to_4d_onehot(mkps))
+
+            target, mask = self.kp_to_4d_onehot(mkps, mask=True)
+            target_corrs.append(target)
+            neg_sampling_mask.append(mask)
         
         base_img = self._norm_image(base_img) if self.norm else torch.from_numpy(base_img)
         # print(f"{time.time() - A:.4f}")
@@ -231,6 +251,7 @@ class PairAug:
             "aug_imgs": torch.stack(aug_imgs),
             "aug_kps": aug_kps,
             "target_corrs": torch.stack(target_corrs),
+            "target_mask": torch.stack(neg_sampling_mask),
             "base_img_idx": torch.tensor([index]),
             "aug_img_idx": torch.tensor([index] * (self.n_derive)),
         }

@@ -17,18 +17,29 @@ from .misc import (NestedTensor, nested_tensor_from_tensor_list)
 from .backbone import build_backbone
 from .transformer import build_halfformer
 from .position_encoding import NerfPositionalEncoding, MLP
+from .focal_loss import FocalLossV2
 from dense_match.margin import SampledMarginLoss
 
 class NormMeanSquaredError(torchmetrics.MeanSquaredError):
     
-    def update(self, preds: torch.Tensor, target: torch.Tensor):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.loss_fn = FocalLossV2(reduction='mean')
+    
+    def update(self, preds: torch.Tensor, target: torch.Tensor, mask: torch.Tensor=None):
         """Update state with predictions and targets.
 
         Args:
             preds: Predictions from model
             target: Ground truth values
         """
-        sum_squared_error = torch.nn.functional.mse_loss(preds, target)
+        if mask is None:
+            # sum_squared_error = self.loss_fn(preds, target)
+            sum_squared_error = torch.nn.functional.mse_loss(preds, target)
+        else:
+            sum_squared_error = mask * (preds - target)**2
+            # sum_squared_error = mask * torch.nn.functional.binary_cross_entropy(preds, target.int(), reduction='none')
+            sum_squared_error = sum_squared_error.sum() / mask.sum()
         n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
 
         self.sum_squared_error += sum_squared_error
@@ -163,7 +174,7 @@ class LitCOTR(pl.LightningModule):
         pred_corr_volum = self.correlation(n_ref_hs, aug_hs)
         # corr_loss = torch.nn.functional.mse_loss(pred_corr_volum, batch['target_corrs'])
         # corr_loss = corr_loss.sum() / batch['target_corrs'].sum()
-        corr_loss = self.train_mse(pred_corr_volum, batch['target_corrs'])
+        corr_loss = self.train_mse(pred_corr_volum, batch['target_corrs'], mask=batch['target_mask'])
         margin_loss = self.train_margin(
             torch.cat([
                 torch.mean(ref_emb, dim=[2, 3]),
@@ -177,9 +188,11 @@ class LitCOTR(pl.LightningModule):
         
         self.log('train_mse_step', self.train_mse.compute(), prog_bar=True)
         self.log('train_margin_step', self.train_margin.compute(), prog_bar=True)
-        if batch_idx % 100 == 0:
+        if self.global_step % 100 == 0:
             self.logger.experiment.add_histogram(
-                'train/transformer/hs', torch.cat([tmp1, tmp2], dim=0), batch_idx)
+                'train/transformer/hs', torch.cat([tmp1, tmp2], dim=0), self.global_step)
+            self.logger.experiment.add_histogram(
+                'train/transformer/pred_corr', pred_corr_volum, self.global_step)
         return corr_loss + margin_loss * 0.5
     
     def validation_step(self, batch, batch_idx):
