@@ -52,7 +52,7 @@ class CorrVis:
     
     def __init__(self, grid_size):
         self.colors = grid_colors(grid_size)
-        random.shuffle(self.colors)
+        # random.shuffle(self.colors)
         self.max_pool = torch.nn.MaxPool2d(2, 2)
 
     def show_corr_mapping(self, corr_map_4d: torch.Tensor, base_img, aug_img):
@@ -68,11 +68,12 @@ class CorrVis:
 
         mapping = [
             {
-                'ref': (i % w / w, i // w / h),
+                'ref': ((i + .5) % w / w, (i + .5) / w / h),
                 'que': (_x / w, _y / h, _c)
             }
             for i, _x, _y, _c in zip(range(len(x)), x, y, max_conf)
         ]
+        # breakpoint()
         mapping = mapping[::2]
 
         h, w = aug_img.shape[:2]
@@ -107,6 +108,7 @@ class CorrVis:
         
         h, w = corr_map_4d.shape[-2:]
         batch_spatial_corr = rearrange(corr_map_4d, 'h1 w1 h2 w2 -> (h1 w1) 1 h2 w2', h1=h, h2=h, w1=w, w2=w)
+        # pool_corr = batch_spatial_corr
         pool_corr = self.max_pool(batch_spatial_corr)
         logger.debug(f"{batch_spatial_corr.shape} {pool_corr.shape}")
         for y, x in itertools.product(range(1, h), range(1, w)):

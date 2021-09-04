@@ -63,7 +63,8 @@ def build_cotr(ckpt=None):
         cotr = LitCOTR.load_from_checkpoint(
             ckpt,
             trasnformer_args=args,
-            backbone_args=args)
+            backbone_args=args,
+            strict=False)
     else:
         cotr = LitCOTR(args, args)
         state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
@@ -200,7 +201,7 @@ def vis_corr(ckpt):
     lit_img = folder.LitImgFolder(
         '/home/ron/Downloads/fb-isc/train',
         p_aug,
-        batch_size=8,
+        batch_size=9,
         num_worker=16)
     model = build_cotr(ckpt=ckpt).cuda()
 
