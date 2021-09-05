@@ -82,7 +82,7 @@ class LitCOTR(pl.LightningModule):
         self.input_proj = nn.Conv2d(self.backbone.num_channels, hidden_dim, kernel_size=1)
         self.embed_head = nn.Linear(hidden_dim, embed_dim, bias=False)
         self.corr_norm_scale = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
-        self.embed_norm_scale = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
+        # self.embed_norm_scale = nn.Parameter(torch.tensor([1.0]), requires_grad=True)
         self._reset_head_parameters()
         
         self.train_mse = NormMeanSquaredError()
@@ -126,7 +126,7 @@ class LitCOTR(pl.LightningModule):
         embed = self.embed_head(rearrange(hs, 'b c h w -> b (h w) c'))
         norm_embed = embed / (torch.linalg.norm(embed, ord=2, dim=-1, keepdim=True) + 1e-6)
         norm_embed = rearrange(norm_embed, 'b (h w) c -> b c h w', h=hs.shape[-2], w=hs.shape[-1])
-        norm_embed = norm_embed * self.embed_norm_scale
+        # norm_embed = norm_embed * self.embed_norm_scale
         return (
             self.norm_4d(hs) * self.corr_norm_scale,
             norm_embed,
@@ -202,8 +202,8 @@ class LitCOTR(pl.LightningModule):
                 'train/transformer/pred_corr', pred_corr_volum, self.global_step)
             self.logger.experiment.add_scalar(
                 'norm_scale/feat_map', self.corr_norm_scale, self.global_step)
-            self.logger.experiment.add_scalar(
-                'norm_scale/embed_vec', self.embed_norm_scale, self.global_step)
+            # self.logger.experiment.add_scalar(
+            #     'norm_scale/embed_vec', self.embed_norm_scale, self.global_step)
         return corr_loss + margin_loss * 0.5
     
     def validation_step(self, batch, batch_idx):

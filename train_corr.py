@@ -17,6 +17,7 @@ from COTR.options.options_utils import *
 from dino import folder
 from dense_match.pair_aug import PairAug, CacheAuged
 from visual_util import CorrVis
+from nali_dev import build_pairaug_iterator
 
 
 def _cotr():
@@ -48,7 +49,7 @@ def build_cotr(ckpt=None):
         "dec_layers": 6,
         "position_embedding": 'lin_sine',
         "cat_img": False,
-        "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process as CNN feature scale going up.
+        # "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process as CNN feature scale going up.
     }
     layer_2_channels = {
         'layer1': 256,
@@ -180,6 +181,70 @@ def train(ckpt=None, overfit=False):
         trainer.fit(model, datamodule=lit_img)
 
 
+@logger.catch(reraise=True)
+def train_dali(ckpt=None, overfit=False):
+    train_iter = build_pairaug_iterator(
+        '/home/ron/Downloads/fb-isc/train',
+        batch_size=96,
+        output_size=[256, 256],
+        max_iter=100_000)
+    val_iter = build_pairaug_iterator(
+        '/home/ron/Downloads/fb-isc/query',
+        batch_size=96,
+        output_size=[256, 256],
+        max_iter=10_000)
+    
+    model = build_cotr(ckpt=ckpt)
+
+    if overfit:
+        logger.debug('Try to overfit on batch')
+        trainer = pl.Trainer(
+            accumulate_grad_batches=1,
+            val_check_interval=1.0,
+            checkpoint_callback=False,
+            callbacks=[],
+            default_root_dir='checkpoints/overfit',
+            gpus=1,
+            precision=16,
+            max_steps=1000,
+            overfit_batches=128,
+            limit_val_batches=0,
+        )
+
+        """
+        manual overfit rountine
+        """
+        _batch = next(iter(val_iter))
+        batch = {k: v.cuda() for k, v in _batch.items() if type(v) is torch.Tensor}
+        adam = model.configure_optimizers()
+        model = model.cuda()
+        
+        for step in range(64):
+            adam.zero_grad()
+            pred = model.forward_step(batch, 0)
+            pred['corr_loss'].backward()
+            adam.step()
+            logger.debug(f"step-{step} loss: {pred['corr_loss']}")
+        
+        fit_res = {
+            'batch': batch,
+            'predict': {k: v.detach().cpu() for k, v in pred.items()}
+        }
+        torch.save(fit_res, 'debug.pth')
+    else:
+        trainer = pl.Trainer(
+            accumulate_grad_batches=1,
+            val_check_interval=1.0,
+            checkpoint_callback=True,
+            callbacks=[],
+            default_root_dir='checkpoints/train',
+            gpus=1,
+            precision=16,
+            terminate_on_nan=True,
+        )
+        trainer.fit(model, train_dataloader=train_iter, val_dataloaders=val_iter)
+
+
 @logger.catch
 def debug():
     p_aug = PairAug(n_deriv=3, norm=True, output_size=[256, 256])
@@ -236,5 +301,6 @@ if __name__ == '__main__':
     fire.Fire({
         'debug': debug,
         'train': train,
+        'train_dali': train_dali,
         'vis': vis_corr,
     })

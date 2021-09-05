@@ -38,6 +38,17 @@
             ]
         },
         {
+            "name": "train_corr.py dali",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_corr.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "train_dali"
+            ]
+        },
+        {
             "name": "train_corr.py visualize",
             "type": "python",
             "request": "launch",
