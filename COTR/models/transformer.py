@@ -77,18 +77,29 @@ class Halfformer(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src, mask, pos_embed) -> torch.Tensor:
+    def forward(self, src, mask, pos_embed, cls_embed: torch.Tensor=None) -> torch.Tensor:
         # flatten NxCxHxW to HWxNxC
         bs, c, h, w = src.shape
-        src = src.flatten(2).permute(2, 0, 1)
-        pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
+        src = src.flatten(2)
+        pos_embed = pos_embed.flatten(2)
+        if cls_embed is not None:
+            src = torch.cat([cls_embed[..., None], src], dim=2)
+            pos_embed = torch.cat([torch.zeros_like(cls_embed)[..., None] ,pos_embed], dim=2)
+        src = src.permute(2, 0, 1)
+        pos_embed = pos_embed.permute(2, 0, 1)
         if mask is not None:
             mask = mask.flatten(1)
 
         memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
         # [256, 12, 256] -> [12, 256, 16, 16]
-        memory = memory.permute(1, 2, 0).view(bs, c, h, w)
-        return memory
+        memory = memory.permute(1, 2, 0)
+        if cls_embed is not None:
+            cls_hidden = memory[..., 0]
+            memory = memory[..., 1:]
+        else:
+            cls_hidden = None
+        memory = memory.view(bs, c, h, w)
+        return memory, cls_hidden
 
 
 class TransformerEncoder(nn.Module):

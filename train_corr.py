@@ -8,10 +8,11 @@ import torch
 import pytorch_lightning as pl
 from loguru import logger
 from einops import rearrange
+from torch.utils.data import dataloader
 
 
 from COTR.models.cotr_model import COTR, build
-from COTR.models.pl_cotr import LitCOTR
+from COTR.models.pl_cotr import LitCOTR, LitSelfCor, LitArcCor
 from COTR.options.options import *
 from COTR.options.options_utils import *
 from dino import folder
@@ -49,7 +50,7 @@ def build_cotr(ckpt=None):
         "dec_layers": 6,
         "position_embedding": 'lin_sine',
         "cat_img": False,
-        # "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process as CNN feature scale going up.
+        "lr_backbone": 1e-6,  # NOTE: using this arg will unfreeze backbone, potentialy cause NaN in the training process as CNN feature scale going up.
     }
     layer_2_channels = {
         'layer1': 256,
@@ -61,13 +62,13 @@ def build_cotr(ckpt=None):
 
     if ckpt is not None:
         logger.info(f"Load checkpoint: {os.path.basename(ckpt)}")
-        cotr = LitCOTR.load_from_checkpoint(
+        cotr = LitArcCor.load_from_checkpoint(
             ckpt,
             trasnformer_args=args,
             backbone_args=args,
             strict=False)
     else:
-        cotr = LitCOTR(args, args)
+        cotr = LitArcCor(args, args)
         state = torch.load('../COTR/out/default/checkpoint.pth.tar', map_location='cpu')['model_state_dict']
         cotr.load_state_dict(state, strict=False)
 
@@ -182,7 +183,7 @@ def train(ckpt=None, overfit=False):
 
 
 @logger.catch(reraise=True)
-def train_dali(ckpt=None, overfit=False):
+def train_dali(ckpt=None, overfit=False, resume=False):
     train_iter = build_pairaug_iterator(
         '/home/ron/Downloads/fb-isc/train',
         batch_size=96,
@@ -219,7 +220,7 @@ def train_dali(ckpt=None, overfit=False):
         adam = model.configure_optimizers()
         model = model.cuda()
         
-        for step in range(64):
+        for step in range(128):
             adam.zero_grad()
             pred = model.forward_step(batch, 0)
             pred['corr_loss'].backward()
@@ -237,27 +238,62 @@ def train_dali(ckpt=None, overfit=False):
             val_check_interval=1.0,
             checkpoint_callback=True,
             callbacks=[],
-            default_root_dir='checkpoints/train',
+            default_root_dir='checkpoints/self_cor',
             gpus=1,
-            precision=16,
+            precision=32,
             terminate_on_nan=True,
+            resume_from_checkpoint=ckpt if resume else None,
         )
+        # trainer.validate(model, dataloaders=[val_iter])
         trainer.fit(model, train_dataloader=train_iter, val_dataloaders=val_iter)
 
 
 @logger.catch
 def debug():
-    p_aug = PairAug(n_deriv=3, norm=True, output_size=[256, 256])
-    lit_img = folder.LitImgFolder(
-        '/home/ron/Downloads/fb-isc/train',
-        p_aug,
-        batch_size=96,
-        num_worker=24)
+    # p_aug = PairAug(n_deriv=3, norm=True, output_size=[256, 256])
+    # lit_img = folder.LitImgFolder(
+    #     '/home/ron/Downloads/fb-isc/train',
+    #     p_aug,
+    #     batch_size=96,
+    #     num_worker=24)
     
-    debug_dataset(lit_img)
+    # debug_dataset(lit_img)
 
     # model = build_cotr()
     # model_profiling(model, lit_img)
+
+    # A = torch.ones(
+    #     [1000, 32], requires_grad=True,
+    #     device="cuda")
+    # adam = torch.optim.Adam([A], lr=1e-2)
+    
+    A = torch.nn.Embedding(1000, 32, device='cuda', sparse=True)
+    adam = torch.optim.SparseAdam(list(A.parameters()), lr=1e-2)
+    
+    B = torch.normal(
+        mean=torch.zeros([8, 32]),
+        std=torch.ones([8, 32]))
+    Y = torch.zeros([8, 4])
+
+    # A = A.cuda()
+    B = B.cuda()
+    Y = Y.cuda()
+    indice = torch.tensor([1,4,6,2], dtype=torch.long, device='cuda')
+
+    for _ in range(100):
+        sub_A = A(indice)
+
+        adam.zero_grad()
+        C = torch.nn.functional.linear(B, sub_A)
+        loss = torch.abs(Y - C).sum()
+        loss.backward()
+        adam.step()
+        breakpoint()
+    print(A(indice))
+    print(A(indice).mean(dim=0))
+    A_exclu = A[[i for i in range(100) if i not in [1,4,6,2]], :]
+    print(A_exclu.shape)
+    print(A_exclu.mean(dim=0))
 
 
 @logger.catch(reraise=True)

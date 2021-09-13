@@ -270,7 +270,7 @@ class ExternalIterator(object):
                 batch.append(np.frombuffer(f.read(), dtype = np.uint8))
             sample_idx.append(np.array([index], dtype=np.int64))
             drive_idx.append(np.array([index for _ in range(self.n_drive)], dtype=np.int64))
-            self.i = (self.i + 1) % self.n
+            self.i = (self.i + 1) % len(self.img_paths)
         return (batch, sample_idx, drive_idx)
 
 
