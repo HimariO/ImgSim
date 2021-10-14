@@ -1,3 +1,5 @@
+
+import math
 import time
 import itertools
 import functools
@@ -256,6 +258,55 @@ class PairAug:
             "aug_img_idx": torch.tensor([index] * (self.n_derive)),
         }
 
+
+
+class EZPairAug(PairAug):
+    
+    @property
+    def gemo_transf(self) -> iaa.Augmenter:
+        if not hasattr(self, '_gemo_trans'):
+            self._gemo_trans = iaa.Sequential([
+                iaa.Fliplr(p=0.5),
+                iaa.Flipud(p=0.5),
+                iaa.Sometimes(0.5, iaa.Rotate(rotate=(-90, 90))),
+                iaa.Sometimes(0.5, iaa.OneOf([
+                    iaa.ScaleX((0.5, 1.5)),
+                    iaa.ScaleY((0.5, 1.5)),
+                ])),
+                iaa.TranslateX(percent=(-0.2, 0.2)),
+                iaa.TranslateY(percent=(-0.2, 0.2)),
+            ])
+        return self._gemo_trans
+    
+    @property
+    def color_transf(self) -> iaa.Augmenter:
+        if not hasattr(self, '_color_transf'):
+            self._color_transf = iaa.Sequential([
+                iaa.OneOf([
+                    iaa.MultiplyAndAddToBrightness(mul=(0.5, 1.5), add=(-30, 30)),
+                    iaa.MultiplyHueAndSaturation(mul_hue=(0.5, 1.5)),
+                    iaa.ChangeColorTemperature((1100, 10000)),
+                ]),
+                iaa.OneOf([
+                    iaa.Sometimes(
+                        0.4,
+                        iaa.OneOf([
+                            iaa.GammaContrast((0.5, 2.0)),
+                            iaa.AllChannelsCLAHE(clip_limit=(1, 10)),
+                            iaa.HistogramEqualization(),
+                        ])
+                    ),
+                    iaa.Sometimes(
+                        0.6,
+                        iaa.OneOf([
+                            iaa.BlendAlpha([0.25, 0.75], iaa.MedianBlur(13)),
+                            iaa.GaussianBlur(sigma=(0.0, 3.0)),
+                            iaa.MotionBlur(k=15)
+                        ]),
+                    ),
+                ])
+            ])
+        return self._color_transf
 
 
 class CacheAuged(PairAug):

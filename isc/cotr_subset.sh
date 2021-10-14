@@ -1,9 +1,11 @@
 SELF=$(dirname "$(realpath $0)")
-OUT_DIR=${1:-"$SELF/data"}
+OUT_DIR=${2:-"$SELF/data"}
 
+MODEL_NAME="cotr_base"
 DATA_DIR="/home/ron/Downloads/fb-isc"
 DESC_OUT="$OUT_DIR/cotr"
-CKPT="checkpoints/train/lightning_logs/version_29/checkpoints/epoch=28-step=120842.ckpt"
+# CKPT="checkpoints/self_cor/lightning_logs/version_0/checkpoints/epoch=21-step=91673.ckpt"
+CKPT=${1:-"checkpoints/self_cor/lightning_logs/version_0/checkpoints/epoch=21-step=91673.ckpt"}
 
 if [ ! -d $DESC_OUT ]; then
     mkdir -p $DESC_OUT
@@ -18,7 +20,7 @@ PYTHONPATH=$PYTHONPATH:"$SELF/.." python $SELF/baselines/GeM_baseline.py \
     --n_train_pca 10000 \
     --pca_dim 224 \
     --checkpoint $CKPT \
-    --model "cotr" \
+    --model $MODEL_NAME \
     --train_pca
 fi
 
@@ -29,7 +31,7 @@ PYTHONPATH=$PYTHONPATH:"$SELF/.." python $SELF/baselines/GeM_baseline.py \
     --image_dir  "$DATA_DIR/query" \
     --o "$DESC_OUT/subset_1_queries_multigrain.hdf5" \
     --checkpoint $CKPT \
-    --model "cotr" \
+    --model $MODEL_NAME \
     --pca_file "$DESC_OUT/pca_multigrain.vt"
 fi
 
@@ -40,7 +42,7 @@ PYTHONPATH=$PYTHONPATH:"$SELF/.." python $SELF/baselines/GeM_baseline.py \
     --image_dir "$DATA_DIR/reference" \
     --o "$DESC_OUT/subset_1_references_multigrain.hdf5" \
     --checkpoint $CKPT \
-    --model "cotr" \
+    --model $MODEL_NAME \
     --pca_file "$DESC_OUT/pca_multigrain.vt"
 fi
 

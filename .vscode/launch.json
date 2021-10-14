@@ -49,6 +49,17 @@
             ]
         },
         {
+            "name": "train_corr.py baseline",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train_corr.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "args": [
+                "train_baseline"
+            ]
+        },
+        {
             "name": "train_corr.py visualize",
             "type": "python",
             "request": "launch",

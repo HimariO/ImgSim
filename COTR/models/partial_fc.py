@@ -278,8 +278,8 @@ class PartialFC(Module):
         neg_class = self.sample(positive)
         neg_w_mtx = self.weights(neg_class)
         w_mtx = torch.cat([pos_w_mtx, neg_w_mtx], dim=0)
-        logits = linear(normalize(x), normalize(w_mtx))
         # breakpoint()
+        logits = linear(normalize(x), normalize(w_mtx))
         return logits, remap_y
 
 
@@ -310,7 +310,10 @@ class ArcMarginProduct(Module):
     def forward(self, input: torch.Tensor, label: torch.LongTensor):
         # --------------------------- cos(theta) & phi(theta) ---------------------------
         # cosine = F.linear(F.normalize(input), F.normalize(self.weight))
-        cosine, label = self.fc(input, label)
+        if isinstance(self.fc, nn.Linear):
+            cosine = self.fc(input)
+        else:
+            cosine, label = self.fc(input, label)
         cosine = cosine.float()
 
         sine = torch.sqrt((1.0 - torch.pow(cosine, 2)).clamp(1e-7, 1))
@@ -333,14 +336,52 @@ class ArcMarginProduct(Module):
 
 def test_fc():
     fc = PartialFC(10000, 256, sample_ratio=0.1)
+    for p in fc.parameters():
+        if p.dim() > 1:
+            nn.init.xavier_uniform_(p)
     x = torch.normal(
         mean=torch.zeros([8, 256]),
         std=torch.ones([8, 256])
     )
     y = torch.tensor([66, 77, 88, 100, 20, 30, 100, 55], dtype=torch.int64)
     logits, new_y = fc.forward(x, y)
-    print(logits.shape)
-    print(new_y)
+    
+    x_norm = normalize(x)
+    w = normalize(list(fc.weights.parameters())[0].data.clone()).T
+
+    mul = torch.matmul(x_norm, w)
+    
+    for i in range(8):
+        sample_0_tar_0 = (x_norm[i] * w[:, y[i]]).sum()
+        sample_0_tar_0_ = (x_norm[i] * w[:, 10000 - 1 - y[i]]).sum()
+        partial_counter = logits[i, new_y[i]]
+        partial_counter_ = logits[i, 1000 - 1 - new_y[i]]
+        
+        delta = torch.abs(partial_counter - sample_0_tar_0)
+        delta_ = torch.abs(partial_counter - sample_0_tar_0_)
+        print(delta, delta_)
+    breakpoint()
+
+    adam = torch.optim.SparseAdam(fc.parameters(), lr=1e-3)
+
+    # for _ in range(32):
+    #     adam.zero_grad()
+    #     logits, new_y = fc.forward(x, y)
+    #     # print(logits.shape)
+    #     # print(new_y)
+    #     loss = torch.nn.functional.cross_entropy(logits, new_y)
+    #     loss.backward()
+    #     adam.step()
+
+    #     prob = torch.softmax(logits, dim=-1)
+    #     target_prob = prob[:, new_y]
+    #     # target_prob = prob.gather(dim=-1, index=new_y)
+    #     print(target_prob)
+    #     print(prob.max(dim=-1).values - target_prob)
+    #     print(loss)
+    #     print('-' * 100)
+
+    
 
 
 def test_arc_fc():
@@ -359,4 +400,5 @@ def test_arc_fc():
 
 
 if __name__ == '__main__':
-    test_arc_fc()
+    # test_arc_fc()
+    test_fc()

@@ -25,7 +25,7 @@ from torchvision.transforms import functional as tvtf
 from isc.io import write_hdf5_descriptors
 from isc.pnasnet import pnasnet5large
 from isc.vision_transformer import VisionTransformer, vit_base
-from COTR.models.pl_cotr import LitArcCor, LitCOTR
+from COTR.models.pl_cotr import LitArcCor, LitCOTR, Baseline
 from COTR.models.misc import NestedTensor
 
 
@@ -134,12 +134,17 @@ def load_model(name, checkpoint_file):
             'layer4': 2048,
         }
         args['dim_feedforward'] = layer_2_channels[args['layer']]
-        model = LitCOTR.load_from_checkpoint(
+        model = LitArcCor.load_from_checkpoint(
             checkpoint_file,
             trasnformer_args=args,
             backbone_args=args,
             strict=False)
         logger.info(f"load COTR checkpoint: {checkpoint_file}")
+        return model
+    
+    if name == 'cotr_base':
+        logger.info(f"load Baseline model checkpoint: {checkpoint_file}")
+        model = Baseline.load_from_checkpoint(checkpoint_file)
         return model
 
     assert False
@@ -187,8 +192,17 @@ def cotr_feat(model: LitCOTR, samples):
             x = tvtf.to_tensor(x)
         return tvtf.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
     
-    nt = NestedTensor(_norm_image(samples), torch.zeros_like(samples))
-    norm_feat_map, norm_embed, _ = model(nt)
+    if isinstance(model, LitCOTR):
+        nt = NestedTensor(samples, torch.zeros_like(samples))
+    elif isinstance(model, Baseline):
+        nt = samples
+    
+    out = model(nt)
+    
+    if len(out) == 3:
+        norm_feat_map, norm_embed, _ = out
+    else:
+        feat_map, norm_embed = out
     return norm_embed
 
 
@@ -220,33 +234,9 @@ class ImageList(Dataset):
         return x
 
 
-def main():
-
-    parser = argparse.ArgumentParser()
-    parser = setup_parser(parser)
-    args = parser.parse_args()
-    args.scales = [float(x) for x in args.scales.split(",")]
-
-    print("args=",)
-    for k, v in vars(args).items():
-        print(f"{k}: {v}")
-
+def build_dataset(args):
     print("reading image names from", args.file_list)
-
-    if args.device == "cpu":
-        if 'Linux' in platform.platform():
-            os.system(
-                'echo hardware_image_description: '
-                '$( cat /proc/cpuinfo | grep ^"model name" | tail -1 ), '
-                '$( cat /proc/cpuinfo | grep ^processor | wc -l ) cores'
-            )
-        else:
-            print("hardware_image_description:", platform.machine(), "nb of threads:", args.nproc)
-    else:
-        print("hardware_image_description:", torch.cuda.get_device_name(0))
-
     image_list = [l.strip() for l in open(args.file_list, "r")]
-
     if args.i1 == -1:
         args.i1 = len(image_list)
     image_list = image_list[args.i0:args.i1]
@@ -263,7 +253,6 @@ def main():
         image_dir += "/"
 
     image_list = [image_dir + fname for fname in image_list]
-
     print(f"  found {len(image_list)} images")
 
     if args.train_pca:
@@ -279,6 +268,7 @@ def main():
 
     transforms = [
         torchvision.transforms.ToTensor(),
+        torchvision.transforms.Resize(320),
         torchvision.transforms.Normalize(mean, std)
     ]
 
@@ -289,6 +279,35 @@ def main():
     transforms = torchvision.transforms.Compose(transforms)
 
     im_dataset = ImageList(image_list, transform=transforms, imsize=args.imsize)
+    return im_dataset, image_list
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser = setup_parser(parser)
+    args = parser.parse_args()
+    args.scales = [float(x) for x in args.scales.split(",")]
+
+    print("args=",)
+    for k, v in vars(args).items():
+        print(f"{k}: {v}")
+
+
+    if args.device == "cpu":
+        if 'Linux' in platform.platform():
+            os.system(
+                'echo hardware_image_description: '
+                '$( cat /proc/cpuinfo | grep ^"model name" | tail -1 ), '
+                '$( cat /proc/cpuinfo | grep ^processor | wc -l ) cores'
+            )
+        else:
+            print("hardware_image_description:", platform.machine(), "nb of threads:", args.nproc)
+    else:
+        print("hardware_image_description:", torch.cuda.get_device_name(0))
+
+    
+    im_dataset, image_list = build_dataset(args)
 
     print("loading model")
     net = load_model(args.model, args.checkpoint)
@@ -320,7 +339,7 @@ def main():
                         o = resnet_activation_map(net, xs)
                     elif 'vit' == args.model:
                         o = vit_extract_feat(net, xs)
-                    elif 'cotr' == args.model:
+                    elif 'cotr' in args.model:
                         o = cotr_feat(net, xs)
                     else:
                         o = pnasnet_activation_map(net, xs)
@@ -336,7 +355,6 @@ def main():
                     if args.model in ['resnet', 'pnasnet']:
                         gem = gem_npy(feats_i, p=args.GeM_p)
                     else:
-                        # import pdb; pdb.set_trace()
                         gem = np.mean(feats_i, axis=0)
                         # gem = feats_i
                     all_desc[no] = gem

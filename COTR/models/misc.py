@@ -14,7 +14,10 @@ from typing import Optional, List
 
 import torch
 import torch.distributed as dist
+import torchmetrics
 from torch import Tensor
+from dense_match.margin import SampledMarginLoss
+from .focal_loss import FocalLossV2
 
 # needed due to empty tensor bug in pytorch and torchvision 0.5
 import torchvision
@@ -110,3 +113,70 @@ def _onnx_nested_tensor_from_tensor_list(tensor_list: List[Tensor]) -> NestedTen
 
     return NestedTensor(tensor, mask=mask)
 
+
+class NormMeanSquaredError(torchmetrics.MeanSquaredError):
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, squared=False, **kwargs)
+        self.loss_fn = FocalLossV2(reduction='mean')
+    
+    def update(self, preds: torch.Tensor, target: torch.Tensor, mask: torch.Tensor=None):
+        """Update state with predictions and targets.
+
+        Args:
+            preds: Predictions from model
+            target: Ground truth values
+        """
+        if mask is None:
+            # sum_squared_error = self.loss_fn(preds, target)
+            sum_squared_error = torch.nn.functional.mse_loss(preds, target)
+        else:
+            sum_squared_error = mask * (preds - target)**2
+            # sum_squared_error = mask * torch.nn.functional.binary_cross_entropy(preds, target.int(), reduction='none')
+            sum_squared_error = sum_squared_error.sum() / mask.sum()
+        n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
+
+        self.sum_squared_error += sum_squared_error
+        self.total += n_obs
+        return sum_squared_error
+
+
+class MovingSampleMargin(torchmetrics.MeanSquaredError):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        sampling_args = kwargs.pop('sampling_args', {})
+        margin_args = kwargs.pop('margin_args', {})
+        self.loss_fn = SampledMarginLoss(sampling_args=sampling_args, margin_args=margin_args)
+    
+    def update(self, embed: torch.Tensor, target: torch.Tensor):
+        """Update state with predictions and targets.
+
+        Args:
+            embed: Predictions from model
+            target: Ground truth values
+        """
+        sum_squared_error = self.loss_fn(embed, target)
+        n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
+
+        self.sum_squared_error += sum_squared_error
+        self.total += n_obs
+        return sum_squared_error
+    
+    def compute(self) -> torch.Tensor:
+        return self.sum_squared_error / self.total
+
+class MovingAverage(torchmetrics.MeanSquaredError):
+    
+    def update(self, loss: torch.Tensor, num_entry: torch.Tensor):
+        """Update state with predictions and targets.
+
+        Args:
+            embed: Predictions from model
+            target: Ground truth values
+        """
+        self.sum_squared_error += loss
+        self.total += num_entry
+    
+    def compute(self) -> torch.Tensor:
+        return self.sum_squared_error / self.total

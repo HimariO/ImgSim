@@ -3,6 +3,7 @@ from typing import *
 
 import pysnooper
 import numpy as np
+import timm
 import torch
 from torch.nn.modules import sparse
 import torchmetrics
@@ -14,81 +15,19 @@ from easydict import EasyDict as edict
 from loguru import logger
 
 from COTR.utils import debug_utils, constants, utils
-from .misc import (NestedTensor, nested_tensor_from_tensor_list)
+from .misc import (
+    NormMeanSquaredError,
+    MovingAverage,
+    MovingSampleMargin,
+    NestedTensor,
+    nested_tensor_from_tensor_list
+)
 from .backbone import build_backbone
 from .transformer import build_halfformer
 from .position_encoding import NerfPositionalEncoding, MLP
 from .focal_loss import FocalLossV2
 from .partial_fc import ArcMarginProduct, PartialFC
 from dense_match.margin import SampledMarginLoss
-
-
-class NormMeanSquaredError(torchmetrics.MeanSquaredError):
-    
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, squared=False, **kwargs)
-        self.loss_fn = FocalLossV2(reduction='mean')
-    
-    def update(self, preds: torch.Tensor, target: torch.Tensor, mask: torch.Tensor=None):
-        """Update state with predictions and targets.
-
-        Args:
-            preds: Predictions from model
-            target: Ground truth values
-        """
-        if mask is None:
-            # sum_squared_error = self.loss_fn(preds, target)
-            sum_squared_error = torch.nn.functional.mse_loss(preds, target)
-        else:
-            sum_squared_error = mask * (preds - target)**2
-            # sum_squared_error = mask * torch.nn.functional.binary_cross_entropy(preds, target.int(), reduction='none')
-            sum_squared_error = sum_squared_error.sum() / mask.sum()
-        n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
-
-        self.sum_squared_error += sum_squared_error
-        self.total += n_obs
-        return sum_squared_error
-
-
-class MovingSampleMargin(torchmetrics.MeanSquaredError):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        sampling_args = kwargs.pop('sampling_args', {})
-        margin_args = kwargs.pop('margin_args', {})
-        self.loss_fn = SampledMarginLoss(sampling_args=sampling_args, margin_args=margin_args)
-    
-    def update(self, embed: torch.Tensor, target: torch.Tensor):
-        """Update state with predictions and targets.
-
-        Args:
-            embed: Predictions from model
-            target: Ground truth values
-        """
-        sum_squared_error = self.loss_fn(embed, target)
-        n_obs = 1  # NOTE: sum_squared_error is already batch-wise normalized
-
-        self.sum_squared_error += sum_squared_error
-        self.total += n_obs
-        return sum_squared_error
-    
-    def compute(self) -> torch.Tensor:
-        return self.sum_squared_error / self.total
-
-class MovingAverage(torchmetrics.MeanSquaredError):
-    
-    def update(self, loss: torch.Tensor, num_entry: torch.Tensor):
-        """Update state with predictions and targets.
-
-        Args:
-            embed: Predictions from model
-            target: Ground truth values
-        """
-        self.sum_squared_error += loss
-        self.total += num_entry
-    
-    def compute(self) -> torch.Tensor:
-        return self.sum_squared_error / self.total
 
 
 class HybirdAdam(torch.optim.Optimizer):
@@ -115,6 +54,173 @@ class HybirdAdam(torch.optim.Optimizer):
         self.adam.load_state_dict(state_dict['dense'])
         self.sparse_adam.load_state_dict(state_dict['sparse'])
     
+
+
+class Baseline(pl.LightningModule):
+
+    def __init__(self, embed_dim=256, num_classes=50_000, partial_fc=False, lr=1e-4):
+        super().__init__()
+        # self.backbone = timm.create_model(
+        #     'tf_efficientnetv2_m',
+        #     pretrained=True,
+        #     num_classes=0,
+        #     global_pool=''
+        # )
+        self.backbone = self._debug_backbone()
+        self.input_proj = nn.Conv2d(2048, embed_dim, kernel_size=1)
+        # self.input_proj = nn.Conv2d(1280, embed_dim, kernel_size=1)
+        self.arc_fc = ArcMarginProduct(
+            PartialFC(num_classes, embed_dim, sample_ratio=0.3)
+            if partial_fc else
+            nn.Linear(embed_dim, num_classes),
+        )
+        self._reset_head_parameters()
+        
+        self.train_arc_ce = MovingAverage()
+        self.train_arc_acc = torchmetrics.Accuracy()
+        self.val_margin = MovingSampleMargin()
+        
+        self.automatic_optimization = False
+        self.ignore_arc = False
+        self.lr = lr
+        self.save_hyperparameters()
+        self.debug_tensor_data = nn.parameter.Parameter(torch.zeros([num_classes, embed_dim]))
+    
+    def _debug_backbone(self,):
+        from torchvision.models._utils import IntermediateLayerGetter
+        from torchvision.models.resnet import resnet50
+        resnet = resnet50(pretrained=True)
+        resnet_headless = IntermediateLayerGetter(resnet, {'layer4': 'feat4'})
+        return resnet_headless
+    
+    def _reset_head_parameters(self):
+        for p in self.arc_fc.fc.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def forward(self, samples: torch.Tensor):
+        features = self.backbone(samples)
+        if hasattr(features, "__getitem__"): features = features['feat4']
+        features = self.input_proj(features)
+        # breakpoint()
+
+        embed = rearrange(features, 'b c h w -> b (h w) c')
+        norm_embed = embed / (torch.linalg.norm(embed, ord=2, dim=-1, keepdim=True) + 1e-6)
+        norm_embed = rearrange(norm_embed, 'b hw c->b c hw')
+        norm_embed = torch.mean(norm_embed, dim=-1)
+        # norm_embed = rearrange(
+        #     norm_embed, 'b (h w) c->b c h w',
+        #     h=features.shape[-2], w=features.shape[-1])
+        # norm_embed = torch.mean(norm_embed, dim=[2, 3])
+        return (
+            features,
+            norm_embed,
+        )
+    
+    def training_step(self, batch: Dict[str, torch.Tensor], batch_idx, log=True):
+        ref_hs, ref_emb = self.forward(batch['base_img'])
+        aug_hs, aug_emb = self.forward(batch['aug_imgs'])
+        assert len(aug_hs) % len(ref_hs) == 0
+
+        if self.ignore_arc:
+            arc_logits = self.arc_fc.fc(
+                torch.cat([
+                    ref_emb,
+                    aug_emb,
+                ]),
+            )
+            sub_label = torch.cat([
+                batch['base_img_idx'],
+                batch['aug_img_idx'],
+            ])
+            arc_ce = nn.functional.cross_entropy(arc_logits, sub_label)
+        else:
+            arc_logits, sub_label = self.arc_fc(
+                torch.cat([
+                    ref_emb,
+                    aug_emb,
+                ]),
+                torch.cat([
+                    batch['base_img_idx'],
+                    batch['aug_img_idx'],
+                ])
+            )
+            arc_ce = nn.functional.cross_entropy(arc_logits, sub_label)
+
+        opts = self.optimizers()
+        opts = [opts] if not isinstance(opts, list) else opts
+        for opt in opts: opt.zero_grad()
+        self.manual_backward(arc_ce)
+        for opt in opts: opt.step()
+
+        if log:
+            self.train_arc_ce.update(arc_ce, 1)
+            self.train_arc_acc.update(arc_logits, sub_label)
+            self.log('arc_ce', arc_ce, prog_bar=True)
+            self.log('train_arc_ce_step', self.train_arc_ce.compute(), prog_bar=True)
+            self.log('train_arc_acc_step', self.train_arc_acc.compute(), prog_bar=True)
+
+            if self.global_step % 16 == 0 and isinstance(self.arc_fc.fc, PartialFC):
+                embed_mtx = list(self.arc_fc.fc.weights.parameters())[0].data
+                if self.debug_tensor_data.data.sum() < 1e-9:
+                    self.debug_tensor_data.data = embed_mtx.clone()
+                else:
+                    delta = torch.abs(embed_mtx - self.debug_tensor_data)
+                    self.logger.experiment.add_histogram(
+                        'train/transformer/arc_fc_w_mtx', delta, self.global_step)
+            if self.global_step % 100 == 0:
+                for n, p in self.named_parameters():
+                    self.logger.experiment.add_histogram(f"model_param/{n}", p, self.global_step)
+        # return { 'loss': arc_ce,  }
+    
+    def validation_step(self, batch, batch_idx):
+        ref_hs, ref_emb = self.forward(batch['base_img'])
+        aug_hs, aug_emb = self.forward(batch['aug_imgs'])
+        assert len(aug_hs) % len(ref_hs) == 0
+
+        margin_loss = self.val_margin(
+            torch.cat([
+                ref_emb,
+                aug_emb,
+            ]),
+            torch.cat([
+                batch['base_img_idx'],
+                batch['aug_img_idx'],
+            ])
+        )
+        self.log('val_margin_step', self.val_margin.compute(), prog_bar=True)
+
+        return { 'loss': margin_loss }
+
+    def training_epoch_end(self, training_step_outputs):
+        # self.log('train_arc_ce_epoch', self.train_arc_ce.compute())
+        self.train_arc_ce.reset()
+        # self.log('train_arc_acc_epoch', self.train_arc_acc.compute())
+        self.train_arc_acc.reset()
+    
+    def validation_epoch_end(self, validation_step_outputs):
+        # self.log('val_arc_ce_epoch', self.val_arc_ce.compute(), prog_bar=True)
+        # self.val_arc_ce.reset()
+        # self.log('val_arc_acc_epoch', self.val_arc_acc.compute(), prog_bar=True)
+        # self.val_arc_acc.reset()
+        self.log('val_margin_epoch', self.val_margin.compute(), prog_bar=True)
+        self.val_margin.reset()
+
+    def configure_optimizers(self):
+        if isinstance(self.arc_fc.fc, PartialFC):
+            sparse_param = list(self.arc_fc.parameters())
+            # sp_data = [p.data for p in sparse_param]
+            # param = [p for p in self.parameters() if p.data not in sp_data]
+            param = (
+                list(self.backbone.parameters()) +
+                list(self.input_proj.parameters())
+            )
+            return [
+                torch.optim.Adam(param, lr=self.lr),
+                torch.optim.SparseAdam(sparse_param, lr=self.lr * 10),
+            ]
+        else:
+            return [torch.optim.Adam(self.parameters(), lr=self.lr)]
 
 
 

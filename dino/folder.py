@@ -24,11 +24,13 @@ class ImageFolder(Dataset):
         [-0.5836, -0.6948,  0.4203]
     ])
 
-    def __init__(self, root, transform=None, max_indice=None, slice=None) -> None:
+    def __init__(self, root_or_imgs, transform=None, max_indice=None, slice=None) -> None:
         super().__init__()
-        self.root = root
-        self.img_list = glob.glob(os.path.join(root, '*.png'))
-        self.img_list += glob.glob(os.path.join(root, '*.jpg'))
+        if isinstance(root_or_imgs, list):
+            self.img_list = root_or_imgs
+        else:
+            self.img_list = glob.glob(os.path.join(root_or_imgs, '*.png'))
+            self.img_list += glob.glob(os.path.join(root_or_imgs, '*.jpg'))
         self.max_num = np.inf if max_indice is None else max_indice
         
         if slice is not None:
@@ -76,10 +78,10 @@ class KpImageFolder(ImageFolder):
 
 class LitImgFolder(pl.LightningDataModule):
 
-    def __init__(self, root_dir, transform, batch_size=32, num_worker=16, 
+    def __init__(self, root_or_imgs, transform, batch_size=32, num_worker=16, 
                 split=0.01, step_per_epoch=100_000, shuffle=True):
         super().__init__()
-        self.root = root_dir
+        self.root_or_imgs = root_or_imgs
         self.batch_size = batch_size
         self.num_worker = num_worker
         self.split = split
@@ -92,7 +94,7 @@ class LitImgFolder(pl.LightningDataModule):
     def train_dataloader(self) -> DataLoader:
         slice_range = (0, 1 - self.split)
         train_dataset = KpImageFolder(
-            self.root,
+            self.root_or_imgs,
             transform=self.transform,
             slice=slice_range,
             max_indice=self.steps)
@@ -109,7 +111,7 @@ class LitImgFolder(pl.LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         slice_range = (1 - self.split, 1)
         val_dataset = KpImageFolder(
-            self.root,
+            self.root_or_imgs,
             transform=self.transform,
             slice=slice_range,
             max_indice=10000)

@@ -1,32 +1,65 @@
 import os
-from PIL import Image
+from pprint import pprint
 
-import numpy
+import cv2
+import numpy as np
 import torch
 import timm
+from einops import rearrange
+from PIL import Image
+from timm.models.resnet import ResNet
+from timm.models.efficientnet import EfficientNet, default_cfgs
+from timm.data import ImageDataset, create_loader
 
 from dino.folder import ImageFolder
 
 
+def get_imagenet_labels(filename):
+    labels = []
+    with open(filename, 'r') as f:
+        for line in f:
+            labels.append(line.split('\t')[1][:-1])  # split and remove line break.
+    return labels
+
+
 def view_model():
-    print('>> pretrained')
-    for i, name in enumerate(timm.list_models(pretrained=True)):
-        print(f"[{i}] {name}")
+    # print('>> pretrained')
+    # for i, name in enumerate(timm.list_models(pretrained=True)):
+    #     print(f"[{i}] {name}")
 
-    print('>> not pretrained')
-    for i, name in enumerate(timm.list_models(pretrained=False)):
-        print(f"[{i}] {name}")
+    # print('>> not pretrained')
+    # for i, name in enumerate(timm.list_models(pretrained=False)):
+    #     print(f"[{i}] {name}")
 
-
+    labels = get_imagenet_labels('./imagenet1k_labels.txt')
     m = timm.create_model(
         'tf_efficientnetv2_l',
         pretrained=True,
+        # checkpoint_path="checkpoints/tf_efficientnetv2_l-d664b728.pth"
         num_classes=0,
         global_pool=''
     )
+    # st = torch.load("checkpoints/tf_efficientnetv2_l-d664b728.pth")
+    # m.load_state_dict(st)
+    m.eval()
     # m = timm.create_model('hrnet_w32', pretrained=True)
-    print(m)
+
     print(m(torch.zeros([1, 3, 320, 320])).shape)
+    pprint(default_cfgs['tf_efficientnetv2_l'])
+
+    if False:
+        img = np.asarray(Image.open('/home/ron/Pictures/gloden_retriever.jpg').resize([384, 384]))
+        # img = np.asarray(Image.open('/home/ron/Pictures/cat.jpg').resize([224, 224]))
+        # img = torch.tensor(cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        img = torch.tensor(img)
+        img = rearrange(img, 'h w c -> 1 c h w').float() / 128 - 1
+
+        pred = m(img)
+        print(pred.shape)
+        print(pred.argmax(dim=-1))
+        print(pred.max(dim=-1).values)
+        print(labels[pred.argmax(dim=-1)[0]])
+        # breakpoint()
 
 
 def dataset_softlabel(img_dir):
